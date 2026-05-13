@@ -2,6 +2,24 @@
 
 이 프로젝트는 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 1.1.0 형식을 따르며 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)을 사용합니다.
 
+## [0.0.3] — 2026-05-13
+
+ad-hoc 서명 베타. 메모리 스냅샷 시간 표시 정정 + 진단 로그 강화.
+
+### Fixed
+
+- **메모리 패널 archive 카드 시각 표시** — 이전엔 "이 스냅샷이 archive에 push된 시각"(`archivedAt`)을 표시해, 가장 최근 archive와 현재 메모리가 동일 시각으로 보였습니다. 실제 IR이 정제된 시각(`ir.meta.updatedAt`)으로 정정해 현재 메모리와 archive 카드가 시계열로 구분됩니다.
+
+### Changed
+
+- **PTY 슬라이서 — CJK 공백 보존** — `compactBody`의 trailing whitespace 제거 로직이 CJK 사이 공백을 같이 깎던 문제 완화. 줄바꿈만 trim하는 방식으로 단순화.
+
+### Added — 진단
+
+- **renderer → main.log 통합** — preload에서 `electron-log/preload`를 로드해 renderer 측 로그가 main.log로 흘러들어옵니다. App.tsx 핵심 핸들러(`handleSelectTab`/`closeSession`/`closeAllAttachments`/`handleGoHome`/`handleHomeSubmit`/`handleCreateWorkspace`/`handleOpenCard`)에 breadcrumb 추가.
+- **`sessions:close source` 필드** — IPC 요청에 발원처(`sidebar-trash` / `tab-x` / `workspace-switch` / `workspace-create` / `workspace-add` / `home-go` / `home-submit` / `workspace-removed` / `unknown`) 식별을 추가해 main.log에 함께 찍습니다. 세션이 사라지는 incident 발생 시 발원처를 즉시 추적할 수 있습니다.
+- **XtermView 이벤트 로그** — mount / unmount / `isActive` 전환 / active-rAF의 fit·resize·refresh / PTY onExit / dispose race 시 warn. 탭 전환 프리즈 incident 진단 자료.
+
 ## [0.0.2] — 2026-05-13
 
 ad-hoc 서명 베타. v0.0.1 패키지 빌드에서 발견된 결함 두 건 수정 + 자동 업데이트 채널 사전 도입.

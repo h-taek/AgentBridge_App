@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import log from 'electron-log/renderer'
 import type {
   AppHealth,
   CliKind,
   CliSpawnInteractiveResult,
   EnvProbeResult,
+  SessionCloseSource,
   WorkspaceListEntry,
   WorkspaceMeta
 } from '@shared/ipc'
@@ -84,6 +86,9 @@ function App(): React.JSX.Element {
     const off = window.agentbridge.workspaces.onChanged((evt) => {
       void reloadWorkspaces()
       if (evt.removedWorkspaceId && evt.removedWorkspaceId === openWorkspaceId) {
+        log.info('App.workspaces.onChanged — removed (clearing local state)', {
+          removedWorkspaceId: evt.removedWorkspaceId
+        })
         setAttachments(new Map())
         setOpenWorkspaceId(null)
         setOpenSessionId(null)
@@ -123,23 +128,40 @@ function App(): React.JSX.Element {
     return env?.clis.find((c) => c.kind === initialModel)?.found === true
   }, [env, initialModel])
 
-  const closeAllAttachments = useCallback(async () => {
-    if (!openWorkspaceId) return
-    const sids = Array.from(attachments.keys())
-    for (const sessionId of sids) {
-      try {
-        await window.agentbridge.sessions.close({ workspaceId: openWorkspaceId, sessionId })
-      } catch {
-        /* noop */
+  const closeAllAttachments = useCallback(
+    async (source: SessionCloseSource) => {
+      if (!openWorkspaceId) return
+      const sids = Array.from(attachments.keys())
+      log.info('App.closeAllAttachments', {
+        workspaceId: openWorkspaceId,
+        sessionCount: sids.length,
+        source
+      })
+      for (const sessionId of sids) {
+        try {
+          await window.agentbridge.sessions.close({
+            workspaceId: openWorkspaceId,
+            sessionId,
+            source
+          })
+        } catch {
+          /* noop */
+        }
       }
-    }
-  }, [openWorkspaceId, attachments])
+    },
+    [openWorkspaceId, attachments]
+  )
 
   const handleCreateWorkspace = useCallback(async () => {
     if (!initialModelReady || !trimmedWorkspace || busy) return
+    log.info('App.handleCreateWorkspace', {
+      initialModel,
+      workspacePath: trimmedWorkspace,
+      hasName: workspaceNameDraft.trim().length > 0
+    })
     setBusy(true)
     try {
-      await closeAllAttachments()
+      await closeAllAttachments('workspace-create')
       const created = await window.agentbridge.workspaces.create({
         initialModel,
         workspacePath: trimmedWorkspace,
@@ -179,6 +201,11 @@ function App(): React.JSX.Element {
   const handleOpenCard = useCallback(
     async (w: WorkspaceListEntry, targetSessionId?: string) => {
       if (busy) return
+      log.info('App.handleOpenCard', {
+        workspaceId: w.workspaceId,
+        targetSessionId: targetSessionId ?? null,
+        sessionCount: w.sessions.length
+      })
       // 한 워크스페이스 = 한 윈도우 정책 — 다른 윈도우가 이미 잡고 있으면 그쪽 focus 후 자기는 무동작.
       const claim = await window.agentbridge.window.claimWorkspace({ workspaceId: w.workspaceId })
       if (claim.outcome === 'focused-other') return
@@ -187,7 +214,7 @@ function App(): React.JSX.Element {
         // 빈 워크스페이스 — 자동 삭제하지 않고 (사용자가 + 로 세션 추가 가능),
         // 활성만 비워둠.
         if (openWorkspaceId && openWorkspaceId !== w.workspaceId) {
-          await closeAllAttachments()
+          await closeAllAttachments('workspace-switch')
           setAttachments(new Map())
         }
         setOpenWorkspaceId(w.workspaceId)
@@ -208,7 +235,7 @@ function App(): React.JSX.Element {
       setBusy(true)
       try {
         if (openWorkspaceId && openWorkspaceId !== w.workspaceId) {
-          await closeAllAttachments()
+          await closeAllAttachments('workspace-switch')
           setAttachments(new Map())
         }
         const newAttachments = new Map<string, CliSpawnInteractiveResult>()
@@ -364,7 +391,7 @@ function App(): React.JSX.Element {
         // 다른 워크스페이스로 전환이 필요한 경우 — 기존 attach 정리 후 전체 reopen
         let nextAttachments: Map<string, CliSpawnInteractiveResult>
         if (openWorkspaceId !== w.workspaceId) {
-          if (openWorkspaceId) await closeAllAttachments()
+          if (openWorkspaceId) await closeAllAttachments('workspace-add')
           nextAttachments = new Map<string, CliSpawnInteractiveResult>()
           for (const s of w.sessions) {
             try {
@@ -410,11 +437,16 @@ function App(): React.JSX.Element {
     async (sessionId: string) => {
       // 이미 attach된 세션이면 그냥 활성 전환
       if (attachments.has(sessionId)) {
+        log.info('App.handleSelectTab — switch (already attached)', {
+          fromSessionId: openSessionId,
+          toSessionId: sessionId
+        })
         setOpenSessionId(sessionId)
         return
       }
       // 닫힌(soft-close된) 세션 — 재오픈 = sessions.open으로 PTY 재spawn
       if (!openWorkspaceId || busy) return
+      log.info('App.handleSelectTab — reopen (soft-closed)', { sessionId })
       setBusy(true)
       try {
         const activated = await window.agentbridge.sessions.open({
@@ -435,7 +467,7 @@ function App(): React.JSX.Element {
         setBusy(false)
       }
     },
-    [attachments, openWorkspaceId, busy, reloadWorkspaces]
+    [attachments, openSessionId, openWorkspaceId, busy, reloadWorkspaces]
   )
 
   const handleRenameWorkspace = useCallback(
@@ -469,9 +501,10 @@ function App(): React.JSX.Element {
 
   const handleGoHome = useCallback(async () => {
     if (busy) return
+    log.info('App.handleGoHome')
     setBusy(true)
     try {
-      await closeAllAttachments()
+      await closeAllAttachments('home-go')
       // 자기 윈도우를 home 상태로 되돌림 — windowManager의 windowsByWorkspace 매핑 해제.
       await window.agentbridge.window.releaseWorkspace()
       setAttachments(new Map())
@@ -487,9 +520,10 @@ function App(): React.JSX.Element {
   const handleHomeSubmit = useCallback(
     async (model: CliKind, message: string) => {
       if (busy) return
+      log.info('App.handleHomeSubmit', { model, messageLen: message.length })
       setBusy(true)
       try {
-        await closeAllAttachments()
+        await closeAllAttachments('home-submit')
         const result = await window.agentbridge.home.submit({ model, message })
         // 새 ws — 'claimed' 보장. 자기 윈도우 매핑 등록.
         await window.agentbridge.window.claimWorkspace({
@@ -515,14 +549,21 @@ function App(): React.JSX.Element {
   //   좌 사이드바 휴지통 → hard delete (sessions[] + native session cascade)
   //   상단 탭 X         → soft close (closedAt 마킹만, 사이드바 트리에서 클릭 시 PTY 재spawn 복원)
   const closeSession = useCallback(
-    async (sessionId: string, permanent: boolean) => {
+    async (sessionId: string, permanent: boolean, source: SessionCloseSource) => {
       if (!openWorkspaceId || busy) return
+      log.info('App.closeSession', {
+        workspaceId: openWorkspaceId,
+        sessionId,
+        permanent,
+        source
+      })
       setBusy(true)
       try {
         await window.agentbridge.sessions.close({
           workspaceId: openWorkspaceId,
           sessionId,
-          permanent
+          permanent,
+          source
         })
         setAttachments((prev) => {
           const next = new Map(prev)
@@ -546,12 +587,12 @@ function App(): React.JSX.Element {
   )
 
   const handleDeleteSession = useCallback(
-    (sessionId: string) => closeSession(sessionId, true),
+    (sessionId: string) => closeSession(sessionId, true, 'sidebar-trash'),
     [closeSession]
   )
 
   const handleSoftCloseTab = useCallback(
-    (sessionId: string) => closeSession(sessionId, false),
+    (sessionId: string) => closeSession(sessionId, false, 'tab-x'),
     [closeSession]
   )
 

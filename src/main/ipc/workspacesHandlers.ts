@@ -267,7 +267,8 @@ async function handleSessionsClose(_e: unknown, req: SessionCloseRequest): Promi
   log.info('sessions:close', {
     workspaceId: req.workspaceId,
     sessionId: req.sessionId,
-    permanent: !!req.permanent
+    permanent: !!req.permanent,
+    source: req.source ?? 'unknown'
   })
   const activeS = getActiveSession(req.workspaceId, req.sessionId)
   if (activeS) {

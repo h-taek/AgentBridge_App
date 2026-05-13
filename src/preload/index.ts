@@ -1,5 +1,8 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
+// renderer log → main.log 통합. preload 진입 시 IPC 브릿지 등록 (electron-log v5 표준).
+// renderer 측은 `import log from 'electron-log/renderer'`로 사용.
+import 'electron-log/preload'
 import { IpcChannel } from '@shared/ipc'
 import type {
   AppHealth,

@@ -284,7 +284,6 @@ function streamingPrefixDedup(text: string): string {
   const norm = (s: string): string =>
     s
       .replace(/[`*~_]/g, '')
-      .replace(/\s+/g, ' ')
       .trim()
   for (const block of blocks) {
     if (out.length === 0) {
@@ -311,15 +310,15 @@ function compactBody(lines: string[], model: CliKind): string {
   const deduped: string[] = []
   let prev: string | null = null
   for (const line of filtered) {
-    const norm = line.replace(/\s+$/, '')
+    // \s+$/ 대신 단순 줄바꿈 제거 (한글 뒤 공백 보존 고려)
+    const norm = line.replace(/[\r\n]+$/, '')
     if (norm === prev) continue
     deduped.push(norm)
     prev = norm
   }
   let text = deduped
     .join('\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
+    .replace(/\n{4,}/g, '\n\n\n')
   text = streamingPrefixDedup(text)
   return text
 }

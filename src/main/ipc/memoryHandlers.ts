@@ -65,6 +65,7 @@ async function readArchiveSnapshotMeta(archivePath: string): Promise<ArchiveSnap
   return {
     archivePath,
     archivedAt: parsed.archivedAt,
+    updatedAt: ir.meta?.updatedAt || parsed.archivedAt,
     intentGoal: typeof ir.intent?.goal === 'string' ? ir.intent.goal : '',
     counts: {
       decisions: Array.isArray(ir.decisions) ? ir.decisions.length : 0,

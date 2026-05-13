@@ -415,7 +415,7 @@ export function IrPanel({ workspaceId }: Props): React.JSX.Element {
               <ArchiveCard
                 key={s.archivePath}
                 snapshot={s}
-                relativeLabel={formatRelative(s.archivedAt, now)}
+                relativeLabel={formatRelative(s.updatedAt, now)}
                 onOpen={() => void openArchiveDetail(s)}
                 onDelete={() => void handleDeleteArchive(s)}
               />
@@ -438,7 +438,7 @@ export function IrPanel({ workspaceId }: Props): React.JSX.Element {
         title={detail?.kind === 'archive' ? '메모리 스냅샷' : '현재 메모리'}
         subtitle={
           detail?.kind === 'archive'
-            ? `${formatAbsolute(detail.meta.archivedAt)} · ${formatRelative(detail.meta.archivedAt, now)}`
+            ? `${formatAbsolute(detail.meta.updatedAt)} · ${formatRelative(detail.meta.updatedAt, now)}`
             : currentUpdatedAt
               ? `마지막 정제 · ${formatAbsolute(currentUpdatedAt)}`
               : undefined

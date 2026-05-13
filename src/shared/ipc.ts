@@ -219,6 +219,27 @@ export type SessionOpenRequest = {
   rows?: number
 }
 
+// sessions:close 발원처 식별. main.log에 source 함께 찍어 "왜 사라졌나" 추적.
+//   sidebar-trash    : 좌 사이드바 세션 행의 휴지통 버튼 (hard delete)
+//   tab-x            : 상단 탭의 X 버튼 (soft close)
+//   workspace-switch : 다른 워크스페이스로 전환 시 closeAllAttachments
+//   workspace-create : 새 워크스페이스 만들 때 기존 정리
+//   workspace-add    : 다른 ws에 세션 추가 진입 시 기존 ws 정리
+//   home-go          : 홈 화면으로 이동 시 closeAllAttachments
+//   home-submit      : 홈 화면 첫 제출 시 기존 정리
+//   workspace-removed: 다른 윈도우에서 워크스페이스 hard delete 동기화
+//   unknown          : source 미명시 (마이그레이션/누락 케이스)
+export type SessionCloseSource =
+  | 'sidebar-trash'
+  | 'tab-x'
+  | 'workspace-switch'
+  | 'workspace-create'
+  | 'workspace-add'
+  | 'home-go'
+  | 'home-submit'
+  | 'workspace-removed'
+  | 'unknown'
+
 export type SessionCloseRequest = {
   workspaceId: string
   sessionId: string
@@ -227,6 +248,8 @@ export type SessionCloseRequest = {
   // 워크스페이스 "닫기"는 permanent 미설정 — 빈 세션만 자동 hard delete, 작업 이력
   // 있는 세션은 closedAt 마킹으로 보존(다음 reopen 시 부활).
   permanent?: boolean
+  // 발원처 식별 — main.log 진단용. 누락 시 'unknown'.
+  source?: SessionCloseSource
 }
 
 // L1 — sessions:create / sessions:open 결과. PTY spawn 결과 + replay 포함.
@@ -303,6 +326,7 @@ export type ArchiveSnapshotMeta = {
   // load 시 다시 식별 — archivePath (절대경로) 그대로 전달.
   archivePath: string
   archivedAt: string
+  updatedAt: string
   intentGoal: string
   counts: {
     decisions: number

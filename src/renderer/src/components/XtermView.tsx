@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
+import log from 'electron-log/renderer'
 import type { CliKind, SessionKind } from '@shared/ipc'
 import { ClaudeLogo, CodexLogo, GeminiLogo } from './modelLogos'
 import { TerminalIcon } from './icons'
@@ -87,6 +88,14 @@ export function XtermView({
     const container = containerRef.current
     if (!container) return
 
+    log.info('XtermView mount', {
+      sessionId: attach.sessionId,
+      pid: attach.pid,
+      model,
+      kind,
+      isActive
+    })
+
     const term = new Terminal({
       fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
       fontSize: 13,
@@ -145,6 +154,11 @@ export function XtermView({
       }
     })
     const offExit = window.agentbridge.pty.onExit(sid, (info) => {
+      log.info('XtermView onExit', {
+        sessionId: sid,
+        exitCode: info.exitCode,
+        signal: info.signal
+      })
       setStatus('exited')
       setStatusTitle('')
       onExitRef.current?.(info)
@@ -187,6 +201,7 @@ export function XtermView({
     ro.observe(container)
 
     return () => {
+      log.info('XtermView unmount', { sessionId: sid })
       dataDisposable.dispose()
       ro.disconnect()
       offData()
@@ -216,6 +231,7 @@ export function XtermView({
   // 시점에 검은 화면으로 보임 → term.refresh()로 전체 viewport 재그리기.
   // ResizeObserver는 visibility 변화에 fire 안 하므로 fit/resize도 manual.
   useEffect(() => {
+    log.info('XtermView isActive change', { sessionId: attach.sessionId, isActive })
     if (!isActive) return
     const fit = fitRef.current
     const term = termRef.current
@@ -223,11 +239,20 @@ export function XtermView({
     const id = requestAnimationFrame(() => {
       try {
         fit.fit()
+        log.info('XtermView active-rAF — fit + resize + refresh', {
+          sessionId: attach.sessionId,
+          cols: term.cols,
+          rows: term.rows
+        })
         void window.agentbridge.pty.resize(attach.sessionId, term.cols, term.rows)
         // 핵심 — viewport 전체 재그리기. 검은 화면 회복.
         term.refresh(0, term.rows - 1)
-      } catch {
-        /* dispose 직후 호출되면 무시 */
+      } catch (err) {
+        // dispose 직후 호출되면 무시. 그 외엔 진단용으로 흘려둠.
+        log.warn('XtermView active-rAF 실패 (dispose race일 가능성)', {
+          sessionId: attach.sessionId,
+          err: String(err)
+        })
       }
     })
     return () => cancelAnimationFrame(id)
