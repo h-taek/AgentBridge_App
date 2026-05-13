@@ -4,7 +4,8 @@ import log from 'electron-log/main'
 import * as path from 'node:path'
 import { IpcChannel } from '@shared/ipc'
 import type { AppHealth, PtyStartRequest } from '@shared/ipc'
-import { probeEnvOnce, getCliPath } from './modules/envProbe'
+import { probeEnvOnce, getCliPath, getShellPath } from './modules/envProbe'
+import { buildAdapterEnv } from './modules/cliAdapter/env'
 import { ensureConversationDirs } from './modules/conversationStore'
 import {
   ensureWorkspaceDirs,
@@ -22,6 +23,7 @@ import {
 } from './modules/ptySession'
 import { onUserInput } from './modules/turnRecorder'
 import { registerProbeDeps } from './modules/geminiQuotaTracker'
+import { initAppUpdater } from './modules/appUpdater'
 import {
   applyAppIcon,
   getWorkspaceIdByWindow,
@@ -292,10 +294,12 @@ app.whenReady().then(async () => {
     log.warn('EnvProbe 초기 워밍 실패 — 첫 IPC 호출에서 재시도', err)
   }
   // Background quota probe — geminiQuotaTracker가 ptySession을 *순환 import 없이* 사용하도록 inject.
+  // buildEnv는 매 probe 호출 시점에 평가 — EnvProbe 캐시가 늦게 채워지더라도 최신 shellPath 반영.
   registerProbeDeps({
     startPty: (req, sender, hooks) => startPty(req, sender, hooks),
     killPty: (sessionId) => killPty(sessionId),
-    geminiCliPath: getCliPath('gemini') ?? null
+    geminiCliPath: getCliPath('gemini') ?? null,
+    buildEnv: () => buildAdapterEnv({ shellPath: getShellPath() })
   })
   log.info('AgentBridge ready', { userData: dirs.root, version: app.getVersion() })
   registerIpcHandlers(dirs.root)
@@ -323,6 +327,9 @@ app.whenReady().then(async () => {
   app.on('activate', function () {
     if (!hasAnyWindow()) openWindow({ workspaceId: null })
   })
+
+  // GitHub Releases 기반 auto-update — dev 모드 skip / ad-hoc 빌드에선 다운로드까지만 동작.
+  initAppUpdater()
 })
 
 app.on('window-all-closed', () => {

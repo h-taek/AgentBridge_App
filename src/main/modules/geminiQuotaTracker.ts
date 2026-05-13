@@ -302,13 +302,23 @@ export type ProbeResult = {
 type ProbeDeps = {
   // ptySession.startPty / killPty 주입 — 순환 import 회피용. main에서 inject.
   startPty: (
-    req: { command: string; args: string[]; cwd: string; cols?: number; rows?: number },
+    req: {
+      command: string
+      args: string[]
+      cwd: string
+      cols?: number
+      rows?: number
+      env?: Record<string, string>
+    },
     sender: WebContents,
     hooks: { onData?: (data: string) => void; onExit?: () => void }
   ) => { sessionId: string; pid: number }
   killPty: (sessionId: string) => void
   // gemini 절대경로 — null이면 미설치.
   geminiCliPath: string | null
+  // PTY spawn env 빌더 — buildAdapterEnv 결과를 inject. 패키지 GUI 런치 시 process.env.PATH가
+  // sparse해 `#!/usr/bin/env node` shebang이 깨지는 문제 회피 (login shell PATH가 들어간 env).
+  buildEnv: () => Record<string, string>
 }
 
 let depsCache: ProbeDeps | null = null
@@ -417,7 +427,8 @@ export async function probeQuotaInBackground(): Promise<ProbeResult> {
           args: ['--skip-trust'],
           cwd: probeCwd,
           cols: 120,
-          rows: 30
+          rows: 30,
+          env: depsCache!.buildEnv()
         },
         sender,
         {

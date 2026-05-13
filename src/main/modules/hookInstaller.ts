@@ -30,13 +30,20 @@ const TOML_MARKER_END = '# AgentBridge:end'
 
 // dev/prod 모두에서 resources/bin/agentbridge-memory.js 절대경로를 반환.
 // dev: <repo>/resources/bin/... (app.getAppPath()가 repo root)
-// prod: <.app>/Contents/Resources/bin/... (process.resourcesPath)
-// asarUnpack 정책으로 prod 빌드에서 파일이 실제 디스크 경로로 존재 보장 (electron-builder.yml).
+// prod: <.app>/Contents/Resources/app.asar.unpacked/resources/bin/... — electron-builder가
+//       asarUnpack 패턴(`resources/**`)에 매칭된 파일을 app.asar 옆 `app.asar.unpacked/<원경로>`에
+//       풀어두므로, 호스트 셸 hook(외부 프로세스 spawn)이 실제 디스크 파일로 접근하려면 이 경로 사용.
 export function getHelperBinaryPath(): string {
   if (is.dev) {
     return path.join(app.getAppPath(), 'resources', 'bin', 'agentbridge-memory.js')
   }
-  return path.join(process.resourcesPath, 'bin', 'agentbridge-memory.js')
+  return path.join(
+    process.resourcesPath,
+    'app.asar.unpacked',
+    'resources',
+    'bin',
+    'agentbridge-memory.js'
+  )
 }
 
 // node CLI 절대경로 — 현재는 user의 PATH 안 node 가정. M4 패키징 단계에서 Electron 자체를

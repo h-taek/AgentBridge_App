@@ -2,6 +2,19 @@
 
 이 프로젝트는 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 1.1.0 형식을 따르며 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)을 사용합니다.
 
+## [0.0.2] — 2026-05-13
+
+ad-hoc 서명 베타. v0.0.1 패키지 빌드에서 발견된 결함 두 건 수정 + 자동 업데이트 채널 사전 도입.
+
+### Fixed
+
+- **Hook 시스템 자동 IR 주입이 패키지 빌드에서 항상 실패하던 문제** — `agentbridge-memory` helper binary 경로가 `process.resourcesPath/bin/...`로 잘못 참조돼 hook 없이 spawn 폴백됐습니다. `app.asar.unpacked/resources/bin/...`로 정정. 차별점 3(IR 자동 핸드오프)이 패키지 빌드에서 정상 동작합니다.
+- **Gemini quota 자동 background probe가 패키지 빌드에서 즉시 종료되던 문제** — probe PTY spawn에 login shell PATH가 누락돼 `env: node: No such file or directory`로 exit 127. 어댑터 공용 env 빌더(`buildAdapterEnv`)를 probe 흐름에 inject. footer 자동 캡처 + 자동 폴백 흐름이 정상 동작합니다.
+
+### Added
+
+- **자동 업데이트(electron-updater)** — GitHub Releases의 `latest-mac.yml` 채널을 부팅 직후 + 6시간 주기로 polling. 새 버전 발견 시 백그라운드 다운로드 후 다음 종료 시 자동 설치. 진행/오류는 `~/Library/Logs/agentbridge/main.log`에 누적. ad-hoc 서명 단계에선 다운로드까지만 동작하며, Apple Developer ID 인증서 + notarytool 통과 후 update 흐름이 작동합니다.
+
 ## [0.0.1] — 2026-05-13
 
 첫 공개. macOS만 지원, ad-hoc 서명 빌드.
@@ -46,4 +59,5 @@
 - 사용자 정의 단축키, 로컬 LLM 어댑터, 드래그 앤 드롭 폴더 지원 없음.
 - macOS 외 플랫폼(Windows/Linux) 빌드 없음.
 
+[0.0.2]: https://github.com/h-taek/AgentBridge/releases/tag/v0.0.2
 [0.0.1]: https://github.com/h-taek/AgentBridge/releases/tag/v0.0.1
