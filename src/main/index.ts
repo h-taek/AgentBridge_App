@@ -3,7 +3,7 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import log from 'electron-log/main'
 import * as path from 'node:path'
 import { IpcChannel } from '@shared/ipc'
-import type { AppHealth, PtyStartRequest } from '@shared/ipc'
+import type { AppHealth, AppUpdaterCheckResult, PtyStartRequest } from '@shared/ipc'
 import { probeEnvOnce, getCliPath, getShellPath } from './modules/envProbe'
 import { buildAdapterEnv } from './modules/cliAdapter/env'
 import { ensureConversationDirs } from './modules/conversationStore'
@@ -23,7 +23,7 @@ import {
 } from './modules/ptySession'
 import { onUserInput } from './modules/turnRecorder'
 import { registerProbeDeps } from './modules/geminiQuotaTracker'
-import { initAppUpdater } from './modules/appUpdater'
+import { getCurrentUpdaterStatus, initAppUpdater, triggerManualCheck } from './modules/appUpdater'
 import {
   applyAppIcon,
   getWorkspaceIdByWindow,
@@ -236,6 +236,14 @@ function registerIpcHandlers(userDataDir: string): void {
     if (res.canceled || res.filePaths.length === 0) return null
     return res.filePaths[0]
   })
+
+  // 자동 업데이트 — renderer "업데이트 확인" 버튼이 호출. 즉시 status 반환 + 후속 broadcast.
+  ipcMain.handle(IpcChannel.AppUpdaterCheck, async (): Promise<AppUpdaterCheckResult> => {
+    const res = await triggerManualCheck()
+    return { ok: res.ok, reason: res.reason, status: getCurrentUpdaterStatus() }
+  })
+  // 마지막 status 즉시 조회 — 설정 모달 마운트 시 초기 표시용. trigger 없음.
+  ipcMain.handle(IpcChannel.AppUpdaterGet, () => getCurrentUpdaterStatus())
 
   registerIrHandlers()
   registerMemoryHandlers()

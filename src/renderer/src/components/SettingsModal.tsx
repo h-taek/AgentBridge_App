@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import type {
   AppHealth,
   AppSettings,
+  AppUpdaterStatus,
   EnvProbeResult,
   LanguageCode,
   RefineModelPolicy,
@@ -69,6 +70,10 @@ type Props = {
 export function SettingsModal({ health, env, onClose }: Props): React.JSX.Element {
   const [page, setPage] = useState<SubPage>('main')
   const [settings, setSettings] = useState<AppSettings | null>(null)
+  // 자동 업데이트 status — 모달 mount 시 1회 getStatus + onStatus 구독으로 후속 동기화.
+  // 사용자가 sub-page로 이동해도 SettingsModal root는 mount 유지되므로 status가 끊기지 않음.
+  const [updaterStatus, setUpdaterStatus] = useState<AppUpdaterStatus>({ phase: 'idle' })
+  const [updaterChecking, setUpdaterChecking] = useState(false)
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
@@ -87,6 +92,40 @@ export function SettingsModal({ health, env, onClose }: Props): React.JSX.Elemen
       .then(setSettings)
       .catch(() => undefined)
   }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    window.agentbridge.appUpdater
+      .getStatus()
+      .then((s) => {
+        if (!cancelled) setUpdaterStatus(s)
+      })
+      .catch(() => undefined)
+    const off = window.agentbridge.appUpdater.onStatus((s) => {
+      setUpdaterStatus(s)
+    })
+    return () => {
+      cancelled = true
+      off()
+    }
+  }, [])
+
+  const handleCheckForUpdates = useCallback(async (): Promise<void> => {
+    if (updaterChecking) return
+    setUpdaterChecking(true)
+    try {
+      const res = await window.agentbridge.appUpdater.checkForUpdates()
+      // 즉시 반환된 status로 ui 우선 갱신. 후속 broadcast가 더 정확한 phase 동기화.
+      setUpdaterStatus(res.status)
+      if (!res.ok && res.reason) {
+        setUpdaterStatus({ phase: 'error', message: res.reason })
+      }
+    } catch (e) {
+      setUpdaterStatus({ phase: 'error', message: String(e) })
+    } finally {
+      setUpdaterChecking(false)
+    }
+  }, [updaterChecking])
 
   const updateSettings = useCallback(async (patch: Partial<AppSettings>): Promise<void> => {
     const next = await window.agentbridge.settings.set(patch)
@@ -143,6 +182,9 @@ export function SettingsModal({ health, env, onClose }: Props): React.JSX.Elemen
               onSubPage={setPage}
               onUpdate={updateSettings}
               onPickBasePath={pickBasePath}
+              updaterStatus={updaterStatus}
+              updaterChecking={updaterChecking}
+              onCheckForUpdates={handleCheckForUpdates}
             />
           )}
           {page === 'cli' && <CliPage env={env} />}
@@ -164,6 +206,50 @@ type MainPageProps = {
   onSubPage: (page: SubPage) => void
   onUpdate: (patch: Partial<AppSettings>) => Promise<void>
   onPickBasePath: () => Promise<void>
+  updaterStatus: AppUpdaterStatus
+  updaterChecking: boolean
+  onCheckForUpdates: () => Promise<void>
+}
+
+// AppUpdaterStatus를 사용자 친화 라벨로 변환. (라벨, 보조 텍스트, 강조 여부) 반환.
+function describeUpdaterStatus(
+  status: AppUpdaterStatus,
+  currentVersion: string | undefined
+): { label: string; sub?: string; tone: 'idle' | 'progress' | 'good' | 'warn' } {
+  switch (status.phase) {
+    case 'idle':
+      return { label: '확인하지 않음', tone: 'idle' }
+    case 'skipped-dev':
+      return { label: 'dev 모드 (자동 업데이트 비활성)', tone: 'idle' }
+    case 'checking':
+      return { label: '확인 중…', tone: 'progress' }
+    case 'available':
+      return {
+        label: `새 버전 v${status.version}`,
+        sub: '백그라운드에서 다운로드 중',
+        tone: 'progress'
+      }
+    case 'not-available':
+      return { label: `최신입니다 (v${status.version})`, tone: 'good' }
+    case 'downloading': {
+      const pct = Math.max(0, Math.min(100, Math.round(status.percent)))
+      const verLabel = status.version ? ` v${status.version}` : ''
+      return {
+        label: `다운로드 중${verLabel} · ${pct}%`,
+        tone: 'progress'
+      }
+    }
+    case 'downloaded':
+      return {
+        label: `다운로드 완료 (v${status.version})`,
+        sub: currentVersion === status.version ? undefined : '다음 종료 시 자동 설치 시도',
+        tone: 'good'
+      }
+    case 'error':
+      return { label: '에러', sub: status.message, tone: 'warn' }
+    default:
+      return { label: '—', tone: 'idle' }
+  }
 }
 
 function MainPage({
@@ -172,7 +258,10 @@ function MainPage({
   settings,
   onSubPage,
   onUpdate,
-  onPickBasePath
+  onPickBasePath,
+  updaterStatus,
+  updaterChecking,
+  onCheckForUpdates
 }: MainPageProps): React.JSX.Element {
   const foundCount = env?.clis.filter((c) => c.found).length ?? 0
   const totalCount = env?.clis.length ?? 0
@@ -351,13 +440,41 @@ function MainPage({
       <div className="settings-group">
         <div className="settings-group-label">정보</div>
         <div className="settings-card-list">
+          {(() => {
+            const desc = describeUpdaterStatus(updaterStatus, health?.version)
+            const disabled =
+              updaterChecking ||
+              updaterStatus.phase === 'checking' ||
+              updaterStatus.phase === 'downloading' ||
+              updaterStatus.phase === 'skipped-dev'
+            return (
+              <button
+                className={`settings-row settings-row-button settings-updater-row tone-${desc.tone}`}
+                onClick={() => void onCheckForUpdates()}
+                disabled={disabled}
+                title={
+                  updaterStatus.phase === 'skipped-dev'
+                    ? 'dev 모드에선 자동 업데이트 비활성'
+                    : '지금 새 버전 확인'
+                }
+              >
+                <ArrowUpIcon className="settings-row-icon" />
+                <span className="settings-row-label">업데이트 확인</span>
+                <span className="settings-row-value settings-updater-value">
+                  <span className="settings-updater-label">{desc.label}</span>
+                  {desc.sub && <span className="settings-updater-sub">{desc.sub}</span>}
+                </span>
+                <ChevronRightIcon className="settings-row-chev" />
+              </button>
+            )
+          })()}
           <button
             className="settings-row settings-row-button"
             onClick={() => void window.agentbridge.openExternal(`${GITHUB_URL}/releases`)}
             title="GitHub Releases 페이지를 새 창으로 열기"
           >
-            <ArrowUpIcon className="settings-row-icon" />
-            <span className="settings-row-label">업데이트 확인</span>
+            <ExternalLinkIcon className="settings-row-icon" />
+            <span className="settings-row-label">릴리즈 노트 보기</span>
             <span className="settings-row-value">v{health?.version ?? '–'}</span>
             <ChevronRightIcon className="settings-row-chev" />
           </button>

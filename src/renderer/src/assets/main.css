@@ -2156,6 +2156,50 @@ code {
   text-align: left;
 }
 
+/* 업데이트 row — 라벨 + 보조 문구 stacked. tone에 따라 우측 색상 변화. */
+.settings-updater-value {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  max-width: 260px;
+}
+
+.settings-updater-label {
+  color: var(--color-text-secondary);
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 260px;
+}
+
+.settings-updater-sub {
+  color: var(--color-text-tertiary);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 260px;
+}
+
+.settings-updater-row.tone-progress .settings-updater-label {
+  color: var(--color-text-primary);
+}
+
+.settings-updater-row.tone-good .settings-updater-label {
+  color: #6ad07a;
+}
+
+.settings-updater-row.tone-warn .settings-updater-label {
+  color: #e9a36b;
+}
+
+.settings-updater-row:disabled {
+  opacity: 1;
+  cursor: default;
+}
+
 .settings-row-chev {
   width: 14px;
   height: 14px;

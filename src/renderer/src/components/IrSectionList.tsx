@@ -31,8 +31,8 @@ export function IrSectionList({ ir }: Props): React.JSX.Element {
             {ir.intent.role && <div className="mem-intent-sub">역할 · {ir.intent.role}</div>}
             {ir.intent.constraints && ir.intent.constraints.length > 0 && (
               <ul className="mem-list-plain">
-                {ir.intent.constraints.map((c, i) => (
-                  <li key={i}>{c}</li>
+                {ir.intent.constraints.map((c) => (
+                  <li key={c}>{c}</li>
                 ))}
               </ul>
             )}
@@ -45,8 +45,8 @@ export function IrSectionList({ ir }: Props): React.JSX.Element {
       <MemSection title="결정" count={ir.decisions.length}>
         {ir.decisions.length > 0 ? (
           <ul className="mem-list">
-            {ir.decisions.map((d, i) => (
-              <li key={i} className="mem-row">
+            {ir.decisions.map((d) => (
+              <li key={`${d.topic}::${d.choice}`} className="mem-row">
                 <div className="mem-row-main">
                   <div className="mem-row-title">{d.topic}</div>
                   <div className="mem-row-sub">{d.choice}</div>
@@ -63,10 +63,10 @@ export function IrSectionList({ ir }: Props): React.JSX.Element {
       <MemSection title="파일" count={ir.files.length}>
         {ir.files.length > 0 ? (
           <ul className="mem-list">
-            {ir.files.map((f, i) => {
+            {ir.files.map((f) => {
               const badge = FILE_STATUS_BADGE[f.status]
               return (
-                <li key={i} className="mem-row">
+                <li key={f.path} className="mem-row">
                   <span className={`mem-badge ${badge.cls}`} title={f.status}>
                     {badge.label}
                   </span>
@@ -86,7 +86,7 @@ export function IrSectionList({ ir }: Props): React.JSX.Element {
       <MemSection title="명령" count={ir.commands.length}>
         {ir.commands.length > 0 ? (
           <ul className="mem-list">
-            {ir.commands.map((c, i) => {
+            {ir.commands.map((c) => {
               const exit = c.exitCode
               const exitCls =
                 exit === undefined
@@ -95,7 +95,10 @@ export function IrSectionList({ ir }: Props): React.JSX.Element {
                     ? 'mem-badge-pass'
                     : 'mem-badge-fail'
               return (
-                <li key={i} className="mem-row">
+                <li
+                  key={`${c.cmd}::${exit ?? '-'}::${c.summary ?? ''}::${c.fullOutputRef ?? ''}`}
+                  className="mem-row"
+                >
                   <span className={`mem-badge ${exitCls}`} title={`exit ${exit ?? '-'}`}>
                     {exit === undefined ? '−' : String(exit)}
                   </span>
@@ -115,10 +118,10 @@ export function IrSectionList({ ir }: Props): React.JSX.Element {
       <MemSection title="테스트" count={ir.tests.length}>
         {ir.tests.length > 0 ? (
           <ul className="mem-list">
-            {ir.tests.map((t, i) => {
+            {ir.tests.map((t) => {
               const badge = TEST_STATUS_BADGE[t.status]
               return (
-                <li key={i} className="mem-row">
+                <li key={`${t.name}::${t.status}`} className="mem-row">
                   <span className={`mem-badge ${badge.cls}`} title={t.status}>
                     {badge.label}
                   </span>
@@ -138,8 +141,8 @@ export function IrSectionList({ ir }: Props): React.JSX.Element {
       <MemSection title="할 일" count={ir.pending.length}>
         {ir.pending.length > 0 ? (
           <ul className="mem-list">
-            {ir.pending.map((p, i) => (
-              <li key={i} className="mem-row">
+            {ir.pending.map((p) => (
+              <li key={p.task} className="mem-row">
                 <div className="mem-row-main">
                   <div className="mem-row-title">{p.task}</div>
                   {p.nextStep && <div className="mem-row-sub">다음 · {p.nextStep}</div>}

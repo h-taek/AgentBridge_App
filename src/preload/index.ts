@@ -7,6 +7,8 @@ import { IpcChannel } from '@shared/ipc'
 import type {
   AppHealth,
   AppSettings,
+  AppUpdaterCheckResult,
+  AppUpdaterStatus,
   AttachFilesRequest,
   AttachFilesResult,
   EnvProbeResult,
@@ -284,6 +286,21 @@ const agentbridge = {
     // Electron 32+ 이후 File.path가 사라져 webUtils.getPathForFile만이 안전한 경로.
     // contextIsolated 환경에서 renderer가 File 객체를 그대로 넘기면 preload가 native path 추출.
     getPathForFile: (file: File): string => webUtils.getPathForFile(file)
+  },
+  // 자동 업데이트 — in-app 수동 체크 + 진행 상태 구독.
+  // checkForUpdates는 즉시 trigger(중복 차단), getStatus는 마지막 status 즉시 조회,
+  // onStatus는 main이 broadcast하는 통합 payload 구독.
+  appUpdater: {
+    checkForUpdates: (): Promise<AppUpdaterCheckResult> =>
+      ipcRenderer.invoke(IpcChannel.AppUpdaterCheck),
+    getStatus: (): Promise<AppUpdaterStatus> => ipcRenderer.invoke(IpcChannel.AppUpdaterGet),
+    onStatus: (cb: (status: AppUpdaterStatus) => void): Unsubscribe => {
+      const handler = (_: unknown, status: AppUpdaterStatus): void => cb(status)
+      ipcRenderer.on(IpcChannel.AppUpdaterStatus, handler)
+      return () => {
+        ipcRenderer.off(IpcChannel.AppUpdaterStatus, handler)
+      }
+    }
   },
   // M3.6 C — 멀티 윈도우. workspace를 새/기존 윈도우로 열기 + 부팅 시 자기 윈도우 식별.
   // claim/release는 한 워크스페이스 = 한 윈도우 정책 강화 — renderer가 ws attach 전에 호출.

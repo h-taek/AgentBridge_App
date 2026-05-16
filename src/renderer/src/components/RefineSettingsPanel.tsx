@@ -37,7 +37,7 @@ const SEVERITY_LABELS: Record<QuotaSnapshot['severity'], string> = {
   exceeded: '한도 초과'
 }
 
-export function RefineSettingsPanel(): React.JSX.Element {
+export function RefineSettingsPanel(): React.JSX.Element | null {
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [quota, setQuota] = useState<QuotaSnapshot | null>(null)
   const [env, setEnv] = useState<EnvProbeResult | null>(null)
@@ -100,7 +100,7 @@ export function RefineSettingsPanel(): React.JSX.Element {
     }
   }, [])
 
-  if (!settings) return <></>
+  if (!settings) return null
 
   const sev = quota?.severity ?? 'ok'
   const color = SEVERITY_COLORS[sev]

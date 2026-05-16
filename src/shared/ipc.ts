@@ -553,6 +553,35 @@ export type QuotaProbeResult = {
   durationMs: number
 }
 
+// 자동 업데이트 in-app 진행 상태. main이 autoUpdater 이벤트를 통합해 한 payload로 broadcast.
+//   idle          — 부팅 직후 아직 체크 전
+//   skipped-dev   — dev 모드라 폴링 자체 안 함
+//   checking      — checkForUpdates in-flight
+//   available     — 새 버전 발견. autoDownload=true라 곧 downloading으로 전환
+//   not-available — 현재가 최신
+//   downloading   — 청크 받는 중. percent 0-100
+//   downloaded    — 다운로드 완료. 다음 종료 시 자동 설치 (ad-hoc 단계에선 macOS가 거부할 수 있음)
+//   error         — autoUpdater 에러. message에 사유.
+export type AppUpdaterStatus =
+  | { phase: 'idle' }
+  | { phase: 'skipped-dev' }
+  | { phase: 'checking' }
+  | { phase: 'available'; version: string }
+  | { phase: 'not-available'; version: string }
+  | { phase: 'downloading'; version: string; percent: number; bytesPerSecond: number }
+  | { phase: 'downloaded'; version: string }
+  | { phase: 'error'; message: string }
+
+// renderer가 'appUpdater:check' invoke 시 받는 즉시 응답.
+//   ok=true면 체크 trigger 됐고 이후 status 이벤트로 후속 보고.
+//   ok=false면 trigger 자체 실패(예: dev 모드, in-flight 중복).
+export type AppUpdaterCheckResult = {
+  ok: boolean
+  reason?: string
+  // 트리거 시점의 즉시 status (UI 즉시 반영용)
+  status: AppUpdaterStatus
+}
+
 export const IpcChannel = {
   AppHealth: 'app:health',
   AppOpenPath: 'app:openPath',
@@ -619,7 +648,15 @@ export const IpcChannel = {
   // 자기 윈도우를 home 상태로 되돌림 (handleGoHome 진입 시).
   WindowReleaseWorkspace: 'window:releaseWorkspace',
   // 워크스페이스 create/rename/delete 전역 통보. delete는 removedWorkspaceId 채워짐.
-  WorkspacesChanged: 'workspaces:changed'
+  WorkspacesChanged: 'workspaces:changed',
+  // ─── 자동 업데이트 — in-app 수동 체크 + 진행 상태 broadcast ───
+  // renderer가 "지금 확인" 버튼 등으로 즉시 체크 trigger. 백그라운드 polling과 별개로 발사.
+  AppUpdaterCheck: 'appUpdater:check',
+  // 마지막 status 즉시 조회 (renderer 모달 마운트 시 초기 표시용. trigger 없음).
+  AppUpdaterGet: 'appUpdater:get',
+  // main → renderer broadcast. autoUpdater 이벤트(checking / available / downloading / downloaded / error)를
+  // 통합 status payload로 전달.
+  AppUpdaterStatus: 'appUpdater:status'
 } as const
 
 export type IpcChannelName = (typeof IpcChannel)[keyof typeof IpcChannel]

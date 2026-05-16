@@ -2,6 +2,20 @@
 
 이 프로젝트는 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 1.1.0 형식을 따르며 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)을 사용합니다.
 
+## [Unreleased] — v0.0.4 후보
+
+발행 전. 추가 fix와 함께 묶어 한 번에 빌드/릴리즈 예정.
+
+### Changed
+
+- **설정 → 업데이트 확인** — 이전엔 GitHub Releases 페이지를 외부 브라우저로 여는 단순 링크였습니다. 이제 클릭하면 실제 `electron-updater`의 `checkForUpdates`가 호출되고, 진행 상태(확인 중 → 새 버전 발견 → 다운로드 중 N% → 완료 / 최신입니다 / 에러)가 row에 실시간 표시됩니다. 별도 "릴리즈 노트 보기" row가 GitHub 페이지 외부 링크 역할을 이어받습니다.
+- ad-hoc 서명 단계에선 자동 설치까진 동작 안 하고 다운로드까지만 동작 (정식 노타리 후 완전 자동 설치 가능). 진행 상황은 동일하게 표시됩니다.
+
+### Added — 진단
+
+- **`appUpdater:status` 통합 broadcast** — main이 `electron-updater`의 모든 이벤트(checking / available / not-available / downloading / downloaded / error)를 단일 `AppUpdaterStatus` payload로 변환해 모든 윈도우에 broadcast. renderer가 한 채널만 구독하면 됨.
+- **`appUpdater:get` IPC** — 설정 모달 마운트 시 마지막 status 즉시 조회 (trigger 없음). polling으로 이미 확보된 상태를 즉시 표시.
+
 ## [0.0.3] — 2026-05-13
 
 ad-hoc 서명 베타. 메모리 스냅샷 시간 표시 정정 + 진단 로그 강화.
