@@ -2,9 +2,9 @@
 
 이 프로젝트는 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 1.1.0 형식을 따르며 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)을 사용합니다.
 
-## [Unreleased] — v0.0.4 후보
+## [0.0.4] — 2026-05-22
 
-발행 전. 추가 fix와 함께 묶어 한 번에 빌드/릴리즈 예정.
+ad-hoc 서명 베타. Gemini → Antigravity 리브랜드 + 보안/품질 fix 묶음.
 
 ### Changed
 
@@ -13,12 +13,25 @@
 - **메모리 패널 Refine/Quota 카드 재디자인** — 세 CLI 사용량을 한 줄로 나열, 다음 정제에 사용될 활성 CLI만 이름·상태 배지로 강조 표시.
 - **설정 → 업데이트 확인** — 이전엔 GitHub Releases 페이지를 외부 브라우저로 여는 단순 링크였습니다. 이제 클릭하면 실제 업데이트 체크가 호출되고, 진행 상태(확인 중 → 새 버전 발견 → 다운로드 중 N% → 완료 / 최신입니다 / 에러)가 row에 실시간 표시됩니다. 별도 "릴리즈 노트 보기" row가 GitHub 페이지 외부 링크 역할을 이어받습니다.
 - ad-hoc 서명 단계에선 자동 설치까진 동작 안 하고 다운로드까지만 동작 (정식 노타리 후 완전 자동 설치 가능). 진행 상황은 동일하게 표시됩니다.
+- **세션 reorder 모션** — 채팅 발생으로 좌사이드바·상단 탭의 세션 정렬이 바뀔 때 부드럽게 슬라이드합니다 (View Transitions API, 220ms). `prefers-reduced-motion` 사용자엔 즉시 적용.
 
 ### Added
 
 - **세 CLI 사용량 직접 측정** — 정제 직후 사용된 CLI를 백그라운드로 띄워 `/usage` · `/status` 슬래시 명령으로 현재 quota를 직접 확인합니다. 설정 패널의 "지금 확인" 버튼으로 임의 CLI를 즉시 측정할 수도 있습니다. 한도 근접/초과 시 다음 정제부터 다른 CLI로 자동 폴백.
 - **측정용 세션 흔적 정리** — 측정을 위해 임시로 띄운 CLI 세션은 종료와 동시에 자체 conversation 파일까지 삭제. 다음에 같은 CLI를 외부에서 `--resume` 등으로 열어도 측정용 세션이 보이지 않습니다.
 - **설정 변경 즉시 반영** — 한 패널/윈도우에서 정제 정책을 바꾸면 다른 모든 곳의 활성 CLI 표시가 즉시 갱신됩니다.
+- **메모리 주입 비활성 배지** — Hook 설치 실패로 IR 자동 주입이 동작하지 않는 세션은 탭에 ⚠ 배지가 표시됩니다. 이전엔 silent로 일반 CLI처럼 동작해 핵심 기능 비활성을 알아차리기 어려웠습니다.
+
+### Fixed
+
+- **세션 탭 ⋯ / + 모델 dropdown 검은 화면** — 직전 리팩터 회귀. React updater 안에서 SyntheticEvent를 비동기 참조해 TypeError → 렌더링 중단되던 문제. 클릭 시점에 좌표를 동기 capture하도록 수정.
+- **사용자 입력 워크스페이스 경로 정규화** — Finder "경로 복사" / zsh `Mobile\ Documents` 등 escape·따옴표·`~` 입력이 정상 cwd로 변환됩니다. 미존재 경로는 생성 시점에 명확한 에러로 거부.
+
+### Security
+
+- **`window.electron` 범용 IPC 노출 제거** — 이전엔 preload가 `@electron-toolkit/preload`의 범용 `ipcRenderer.invoke/send/on`도 함께 노출해 curated `window.agentbridge` API를 우회할 수 있었습니다. v0.0.4에서 제거 — renderer는 명시 메서드만 사용.
+- **`pty:start` 임의 명령 실행 표면 제거** — UI에서 사용하지 않으나 IPC 핸들러로 노출되어 있던 PTY spawn 채널 제거. 세션 생성은 `sessions:create/open` 경유로 일원화.
+- **workspaceId / sessionId 경로 검증** — UUID 정규식 + workspaces root prefix 가드 추가. 잘못된 식별자로 인한 userData 상위 디렉토리 접근을 차단합니다.
 
 ### Added — 진단
 
