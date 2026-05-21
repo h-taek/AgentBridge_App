@@ -514,6 +514,10 @@ export function LeftSidebar({
                           <div
                             key={s.sessionId}
                             className={`ws-session${isActive ? ' active' : ''}${sessDisabled ? ' disabled' : ''}`}
+                            // View Transitions API — startViewTransition으로 setState를 감싼 시점에
+                            // 같은 name을 가진 element를 자동으로 reorder 애니메이션 처리. 워크스페이스
+                            // scope를 같이 묶어 다른 ws 동일 sessionId 충돌 방지.
+                            style={{ viewTransitionName: `ses-sb-${w.workspaceId}-${s.sessionId}` }}
                             role="button"
                             tabIndex={sessDisabled || isEditing ? -1 : 0}
                             aria-disabled={sessDisabled}
