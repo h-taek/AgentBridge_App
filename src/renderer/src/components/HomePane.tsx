@@ -3,7 +3,7 @@ import type { CliKind, EnvProbeResult } from '@shared/ipc'
 import { ArrowUpIcon } from './icons'
 import claudeLogo from '../assets/logos/claude.png'
 import codexLogo from '../assets/logos/codex.png'
-import geminiLogo from '../assets/logos/gemini.png'
+import agyLogo from '../assets/logos/agy.png'
 
 // 홈 화면 — 워크스페이스 미선택 상태에서 본문에 표시.
 // 입력 + 모델 선택 → 기본 경로 하위에 워크스페이스 자동 생성 + 세션 spawn + 첫 메시지 submit.
@@ -20,7 +20,7 @@ type Props = {
 const MODEL_META: Record<CliKind, { label: string; logo: string; desc: string }> = {
   claude: { label: 'Claude', logo: claudeLogo, desc: 'Anthropic' },
   codex: { label: 'Codex', logo: codexLogo, desc: 'OpenAI' },
-  gemini: { label: 'Gemini', logo: geminiLogo, desc: 'Google' }
+  agy: { label: 'Antigravity', logo: agyLogo, desc: 'Google' }
 }
 
 export function HomePane({ env, busy, onSubmit }: Props): React.JSX.Element {
@@ -80,7 +80,7 @@ export function HomePane({ env, busy, onSubmit }: Props): React.JSX.Element {
         </div>
 
         <div className="home-models" role="radiogroup" aria-label="모델 선택">
-          {(['claude', 'codex', 'gemini'] as CliKind[]).map((k) => {
+          {(['claude', 'codex', 'agy'] as CliKind[]).map((k) => {
             const meta = MODEL_META[k]
             const available = isAvailable(k)
             const selected = model === k

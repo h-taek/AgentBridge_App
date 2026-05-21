@@ -3,7 +3,14 @@ import { promises as fs } from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 import log from 'electron-log/main'
-import type { AppSettings, CliKind, LanguageCode, RefineModelPolicy, ThemeMode } from '@shared/ipc'
+import type {
+  AppSettings,
+  CliKind,
+  LanguageCode,
+  RefineModelPolicy,
+  ThemeMode,
+  TurnsAssistantDetail
+} from '@shared/ipc'
 
 // AppSettings — M3 N 청크. architecture §14.7.
 //
@@ -11,7 +18,7 @@ import type { AppSettings, CliKind, LanguageCode, RefineModelPolicy, ThemeMode }
 // 워크스페이스 단위가 아닌 *앱 단위* 설정 — 워크스페이스 전환 시에도 유지.
 //
 // 현재 다루는 항목 (M3 N):
-//   - refineModel: refine LLM 선택 정책 (auto/gemini-flash/active/off)
+//   - refineModel: refine LLM 선택 정책 (auto/agy-flash/active/off)
 //
 // 후속 청크에서 추가될 가능성:
 //   - compactionTriggerN / compactionTriggerTokens (O 청크)
@@ -29,10 +36,13 @@ function defaultBasePath(): string {
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
-  refineModel: 'auto',
+  refineModel: 'priority',
+  refinePriorityOrder: ['agy', 'codex', 'claude'],
+  refineFixedCli: 'agy',
   theme: 'dark',
   language: 'ko',
-  defaultBasePath: ''
+  defaultBasePath: '',
+  turnsAssistantDetail: 'compact'
 }
 
 function getSettingsFilePath(): string {
@@ -49,9 +59,15 @@ export async function loadSettings(): Promise<AppSettings> {
     const parsed = JSON.parse(raw) as Partial<AppSettings>
     const merged: AppSettings = {
       refineModel: validateRefineModel(parsed.refineModel) ?? DEFAULT_SETTINGS.refineModel,
+      refinePriorityOrder:
+        validateCliKindArray(parsed.refinePriorityOrder) ?? DEFAULT_SETTINGS.refinePriorityOrder,
+      refineFixedCli: validateCliKind(parsed.refineFixedCli) ?? DEFAULT_SETTINGS.refineFixedCli,
       theme: validateTheme(parsed.theme) ?? DEFAULT_SETTINGS.theme,
       language: validateLanguage(parsed.language) ?? DEFAULT_SETTINGS.language,
-      defaultBasePath: typeof parsed.defaultBasePath === 'string' ? parsed.defaultBasePath : ''
+      defaultBasePath: typeof parsed.defaultBasePath === 'string' ? parsed.defaultBasePath : '',
+      turnsAssistantDetail:
+        validateTurnsAssistantDetail(parsed.turnsAssistantDetail) ??
+        DEFAULT_SETTINGS.turnsAssistantDetail
     }
     cache = merged
     return merged
@@ -71,10 +87,15 @@ export async function saveSettings(patch: Partial<AppSettings>): Promise<AppSett
     ...current,
     ...patch,
     refineModel: validateRefineModel(patch.refineModel) ?? current.refineModel,
+    refinePriorityOrder:
+      validateCliKindArray(patch.refinePriorityOrder) ?? current.refinePriorityOrder,
+    refineFixedCli: validateCliKind(patch.refineFixedCli) ?? current.refineFixedCli,
     theme: validateTheme(patch.theme) ?? current.theme,
     language: validateLanguage(patch.language) ?? current.language,
     defaultBasePath:
-      typeof patch.defaultBasePath === 'string' ? patch.defaultBasePath : current.defaultBasePath
+      typeof patch.defaultBasePath === 'string' ? patch.defaultBasePath : current.defaultBasePath,
+    turnsAssistantDetail:
+      validateTurnsAssistantDetail(patch.turnsAssistantDetail) ?? current.turnsAssistantDetail
   }
   const p = getSettingsFilePath()
   const tmp = `${p}.${process.pid}.${Date.now()}.tmp`
@@ -94,8 +115,25 @@ export function resolveDefaultBasePath(settings: AppSettings): string {
 }
 
 function validateRefineModel(v: unknown): RefineModelPolicy | null {
-  if (v === 'auto' || v === 'gemini-flash' || v === 'active' || v === 'off') return v
+  if (v === 'priority' || v === 'fixed' || v === 'active' || v === 'off') return v
+  // legacy 마이그레이션 — 구버전 정책명들을 priority로 통합 (가장 가까운 의도).
+  if (v === 'auto' || v === 'agy-flash' || v === 'gemini-flash') return 'priority'
   return null
+}
+
+function validateCliKind(v: unknown): CliKind | null {
+  if (v === 'claude' || v === 'codex' || v === 'agy') return v
+  return null
+}
+
+function validateCliKindArray(v: unknown): CliKind[] | null {
+  if (!Array.isArray(v)) return null
+  const validated: CliKind[] = []
+  for (const item of v) {
+    const k = validateCliKind(item)
+    if (k && !validated.includes(k)) validated.push(k)
+  }
+  return validated.length > 0 ? validated : null
 }
 
 function validateTheme(v: unknown): ThemeMode | null {
@@ -108,8 +146,13 @@ function validateLanguage(v: unknown): LanguageCode | null {
   return null
 }
 
-// EnvProbe에서 gemini 어댑터 가용 여부 확인 — RefineDispatcher가 'auto'/'gemini-flash' 처리 시 사용.
+function validateTurnsAssistantDetail(v: unknown): TurnsAssistantDetail | null {
+  if (v === 'full' || v === 'compact' || v === 'minimal') return v
+  return null
+}
+
+// EnvProbe에서 agy 어댑터 가용 여부 확인 — RefineDispatcher가 'auto'/'agy-flash' 처리 시 사용.
 // 동기 import로 cycle 회피하기 위해 envProbe의 getCliPath만 의존.
-export function isGeminiAvailable(getCliPath: (kind: CliKind) => string | null): boolean {
-  return !!getCliPath('gemini')
+export function isAgyAvailable(getCliPath: (kind: CliKind) => string | null): boolean {
+  return !!getCliPath('agy')
 }

@@ -15,7 +15,11 @@ export default defineConfig(
       'docs/**',
       'build/**',
       'resources/**',
-      'tmp_asar/**'
+      'tmp_asar/**',
+      // 로컬 DeepSource 리포트 헬퍼 (.gitignore됨, 로컬 도구) — TS 규칙 적용 대상 아님.
+      '.deepsource-local/**',
+      // CommonJS 빌드 스크립트 — `require()` 사용이 정상이라 TS no-require-imports 적용 안 함.
+      'scripts/**/*.cjs'
     ]
   },
   tseslint.configs.recommended,

@@ -22,6 +22,28 @@ import { InlineRenameInput } from './InlineRenameInput'
 //       * 비활성 → 워크스페이스 열기 (effect가 자동 펼침)
 //       * 활성 → 재오픈 금지 + 트리 접기 (workspace는 열린 상태 유지)
 
+// 모델 표시명 — SessionTabs와 동일한 라벨링 사용.
+const MODEL_LABEL: Record<CliKind, string> = {
+  claude: 'Claude',
+  codex: 'Codex',
+  agy: 'Antigravity'
+}
+
+// 세션 정렬 — SessionTabs와 동일 정책. lastChattedAt desc → 가장 최근 채팅 세션이 위.
+// 채팅 안 한 세션은 createdAt asc로 아래.
+function sortSessionsByLastChatted<T extends { lastChattedAt?: string; createdAt: string }>(
+  list: T[]
+): T[] {
+  return [...list].sort((a, b) => {
+    const ta = a.lastChattedAt
+    const tb = b.lastChattedAt
+    if (ta && tb) return tb.localeCompare(ta)
+    if (ta) return -1
+    if (tb) return 1
+    return a.createdAt.localeCompare(b.createdAt)
+  })
+}
+
 type Props = {
   env: EnvProbeResult | null
   workspaces: WorkspaceListEntry[]
@@ -268,9 +290,9 @@ export function LeftSidebar({
                 onChange={(e) => setInitialModel(e.target.value as CliKind)}
                 disabled={busy}
               >
-                <option value="claude">claude</option>
-                <option value="codex">codex</option>
-                <option value="gemini">gemini</option>
+                <option value="claude">Claude</option>
+                <option value="codex">Codex</option>
+                <option value="agy">Antigravity</option>
               </select>
               <button
                 className="btn btn-primary"
@@ -310,7 +332,9 @@ export function LeftSidebar({
             {visibleWorkspaces.map((w) => {
               const isOpen = w.workspaceId === openWorkspaceId
               const isExpanded = expanded.has(w.workspaceId)
-              const sessions = isOpen && openWorkspace ? openWorkspace.sessions : w.sessions
+              const sessionsRaw = isOpen && openWorkspace ? openWorkspace.sessions : w.sessions
+              // 최근 채팅 세션이 상단으로 오도록 정렬.
+              const sessions = sortSessionsByLastChatted(sessionsRaw)
 
               const isEmpty = sessions.length === 0
               const primarySession =
@@ -411,7 +435,7 @@ export function LeftSidebar({
                             role="menu"
                             onClick={(e) => e.stopPropagation()}
                           >
-                            {(['claude', 'codex', 'gemini'] as CliKind[]).map((k) => {
+                            {(['claude', 'codex', 'agy'] as CliKind[]).map((k) => {
                               const available = env?.clis.find((c) => c.kind === k)?.found === true
                               return (
                                 <button
@@ -424,10 +448,12 @@ export function LeftSidebar({
                                     void onAddSession(w, k)
                                   }}
                                   disabled={!available || busy}
-                                  title={!available ? `${k} CLI가 PATH에 없음` : undefined}
+                                  title={
+                                    !available ? `${MODEL_LABEL[k]} CLI가 PATH에 없음` : undefined
+                                  }
                                 >
                                   <span className={`ws-session-dot model-${k}`} />
-                                  {k}
+                                  {MODEL_LABEL[k]}
                                   {!available && <span className="hint"> (미설치)</span>}
                                 </button>
                               )
@@ -482,7 +508,8 @@ export function LeftSidebar({
                           ? busy || (!isOpen && !canResume)
                           : busy || (!isOpen && (!cliPresent || !canResume))
                         const isEditing = editing === `sess:${s.sessionId}`
-                        const displayName = s.title?.trim() || (isShellSess ? '터미널' : s.model)
+                        const displayName =
+                          s.title?.trim() || (isShellSess ? '터미널' : MODEL_LABEL[s.model])
                         return (
                           <div
                             key={s.sessionId}
@@ -510,9 +537,9 @@ export function LeftSidebar({
                                   ? !canResume
                                     ? '모델 native 세션 미영속화 — resume 불가'
                                     : !cliPresent
-                                      ? `${primarySession?.model} CLI 미설치`
-                                      : `워크스페이스 열기 + ${s.model} 활성`
-                                  : s.model
+                                      ? `${primarySession ? MODEL_LABEL[primarySession.model] : ''} CLI 미설치`
+                                      : `워크스페이스 열기 + ${MODEL_LABEL[s.model]} 활성`
+                                  : MODEL_LABEL[s.model]
                             }
                           >
                             {isShellSess ? (
@@ -531,7 +558,7 @@ export function LeftSidebar({
                               <InlineRenameInput
                                 className="ws-session-label-input"
                                 initialValue={s.title ?? ''}
-                                placeholder={isShellSess ? '터미널' : s.model}
+                                placeholder={isShellSess ? '터미널' : MODEL_LABEL[s.model]}
                                 maxLength={80}
                                 onSave={(v) => {
                                   setEditing(null)

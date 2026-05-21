@@ -4,19 +4,19 @@ import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import log from 'electron-log/renderer'
 import type { CliKind, SessionKind } from '@shared/ipc'
-import { ClaudeLogo, CodexLogo, GeminiLogo } from './modelLogos'
+import { ClaudeLogo, CodexLogo, AgyLogo } from './modelLogos'
 import { TerminalIcon } from './icons'
 
 const MODEL_LABEL: Record<CliKind, string> = {
   claude: 'Claude',
   codex: 'Codex',
-  gemini: 'Gemini'
+  agy: 'Antigravity'
 }
 
 const MODEL_LOGO: Record<CliKind, (p: { className?: string }) => React.JSX.Element> = {
   claude: ClaudeLogo,
   codex: CodexLogo,
-  gemini: GeminiLogo
+  agy: AgyLogo
 }
 
 // XtermView는 외부에서 spawn된 PTY 핸들에 *attach*만 한다.
@@ -122,9 +122,7 @@ export function XtermView({
     const sid = attach.sessionId
     const replay = attach.replay
     // xterm canvas / PTY 구독(외부 시스템) → React state 동기화 effect. setState는 정당.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setStatus('running')
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setHasRendered(false)
 
     // 이전 세션 replay 적용 정책 — kind로 분기.
@@ -164,27 +162,61 @@ export function XtermView({
       onExitRef.current?.(info)
     })
 
+    // Shift+Enter → Option+Enter(\x1b\r) 매핑. 한글 IME race 회피 상태 머신 — 자세한 배경/시도
+    // 이력은 docs/shift-enter-ime.md 참조.
+    const SHIFT_ENTER_LOCK_MS = 50
+    const SHIFT_ENTER_FALLBACK_MS = 200
+    let isComposingState = false
+    let pendingShiftEnter = false
+    let lastShiftEnterAt = 0
+    let pendingFallbackTimer: ReturnType<typeof setTimeout> | null = null
+    const emitShiftEnterNewline = (): void => {
+      if (pendingFallbackTimer) {
+        clearTimeout(pendingFallbackTimer)
+        pendingFallbackTimer = null
+      }
+      pendingShiftEnter = false
+      void window.agentbridge.pty.write(sid, '\x1b\r')
+    }
+
     const dataDisposable = term.onData((data) => {
       void window.agentbridge.pty.write(sid, data)
+      // composition commit된 글자가 PTY로 흘러나간 직후 pending \x1b\r 처리.
+      if (pendingShiftEnter) {
+        emitShiftEnterNewline()
+      }
     })
 
-    // Shift+Enter → Option+Enter와 동일 시퀀스(\x1b\r)로 매핑.
-    // xterm.js 기본은 modifier 차별 없이 Enter를 모두 \r로 보내 모델 TUI가 submit 처리한다.
-    // 그런데 모델 TUI(claude/codex/gemini)는 Option+Enter가 보내는 \x1b\r (ESC + CR)를
-    // 입력 박스 내부 줄바꿈으로 인식하므로, Shift+Enter도 동일 바이트로 변환해 일치시킨다.
-    //
-    // preventDefault + stopPropagation 필수 — false 반환만으로는 xterm.js 내부 textarea의
-    // keydown 기본 동작이 살아 \r이 onData 경로로 추가 누출된다. 그러면 \x1b\r(줄바꿈) +
-    // \r(캐리지 리턴)이 둘 다 도착해 모델 TUI가 줄 추가 후 커서를 같은 줄 시작으로 보낸다.
+    const xtermTextarea =
+      (term as unknown as { textarea?: HTMLTextAreaElement }).textarea ??
+      container.querySelector<HTMLTextAreaElement>('textarea')
+    const onCompStart = (): void => {
+      isComposingState = true
+    }
+    const onCompEnd = (): void => {
+      isComposingState = false
+    }
+    xtermTextarea?.addEventListener('compositionstart', onCompStart)
+    xtermTextarea?.addEventListener('compositionend', onCompEnd)
+
     term.attachCustomKeyEventHandler((e: KeyboardEvent): boolean => {
-      if (e.type !== 'keydown') return true
-      if (e.key === 'Enter' && e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        e.preventDefault()
-        e.stopPropagation()
-        void window.agentbridge.pty.write(sid, '\x1b\r')
+      if (e.type !== 'keydown' || e.key !== 'Enter' || !e.shiftKey) return true
+      e.preventDefault()
+      const now = performance.now()
+      if (now - lastShiftEnterAt < SHIFT_ENTER_LOCK_MS) {
+        // IME가 한 번의 사용자 입력에 keydown을 두 번 발사 — 50ms 안 두 번째는 무시.
         return false
       }
-      return true
+      lastShiftEnterAt = now
+      if (isComposingState) {
+        pendingShiftEnter = true
+        pendingFallbackTimer = setTimeout(() => {
+          if (pendingShiftEnter) emitShiftEnterNewline()
+        }, SHIFT_ENTER_FALLBACK_MS)
+      } else {
+        emitShiftEnterNewline()
+      }
+      return false
     })
 
     // 마운트 직후 PTY를 xterm 실측 크기로 resize (main spawn 시 default cols/rows 사용했으므로).
@@ -202,10 +234,13 @@ export function XtermView({
 
     return () => {
       log.info('XtermView unmount', { sessionId: sid })
+      if (pendingFallbackTimer) clearTimeout(pendingFallbackTimer)
       dataDisposable.dispose()
       ro.disconnect()
       offData()
       offExit()
+      xtermTextarea?.removeEventListener('compositionstart', onCompStart)
+      xtermTextarea?.removeEventListener('compositionend', onCompEnd)
       term.dispose()
       fitRef.current = null
       termRef.current = null

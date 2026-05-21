@@ -3,7 +3,7 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import log from 'electron-log/main'
 import * as path from 'node:path'
 import { IpcChannel } from '@shared/ipc'
-import type { AppHealth, AppUpdaterCheckResult, PtyStartRequest } from '@shared/ipc'
+import type { AppHealth, AppUpdaterCheckResult } from '@shared/ipc'
 import { probeEnvOnce, getCliPath, getShellPath } from './modules/envProbe'
 import { buildAdapterEnv } from './modules/cliAdapter/env'
 import { ensureConversationDirs } from './modules/conversationStore'
@@ -22,7 +22,7 @@ import {
   writePty
 } from './modules/ptySession'
 import { onUserInput } from './modules/turnRecorder'
-import { registerProbeDeps } from './modules/geminiQuotaTracker'
+import { registerProbeDeps } from './modules/cliQuotaTracker'
 import { getCurrentUpdaterStatus, initAppUpdater, triggerManualCheck } from './modules/appUpdater'
 import {
   applyAppIcon,
@@ -198,7 +198,8 @@ function registerIpcHandlers(userDataDir: string): void {
     return Boolean(sess && sess.workspaceId === senderWorkspaceId)
   }
 
-  ipcMain.handle(IpcChannel.PtyStart, (event, req: PtyStartRequest) => startPty(req, event.sender))
+  // pty:start는 임의 명령 실행 표면이라 IPC로 노출 안 함. PTY spawn은 sessions:create/open이
+  // main 내부에서 어댑터 경유로 처리한다.
   ipcMain.handle(IpcChannel.PtyWrite, (event, sessionId: string, data: string) => {
     if (!senderOwnsPtySession(event, sessionId)) {
       log.warn('pty:write 거부 — sender 소유권 불일치', { sessionId })
@@ -301,12 +302,13 @@ app.whenReady().then(async () => {
   } catch (err) {
     log.warn('EnvProbe 초기 워밍 실패 — 첫 IPC 호출에서 재시도', err)
   }
-  // Background quota probe — geminiQuotaTracker가 ptySession을 *순환 import 없이* 사용하도록 inject.
-  // buildEnv는 매 probe 호출 시점에 평가 — EnvProbe 캐시가 늦게 채워지더라도 최신 shellPath 반영.
+  // Background quota probe — cliQuotaTracker가 ptySession을 *순환 import 없이* 사용하도록 inject.
+  // getCliPath는 매 probe 호출 시점에 평가 — EnvProbe 캐시가 늦게 채워지더라도 최신 path 반영.
   registerProbeDeps({
     startPty: (req, sender, hooks) => startPty(req, sender, hooks),
     killPty: (sessionId) => killPty(sessionId),
-    geminiCliPath: getCliPath('gemini') ?? null,
+    writePty: (sessionId, data) => writePty(sessionId, data),
+    getCliPath: (cli) => getCliPath(cli) ?? null,
     buildEnv: () => buildAdapterEnv({ shellPath: getShellPath() })
   })
   log.info('AgentBridge ready', { userData: dirs.root, version: app.getVersion() })

@@ -9,7 +9,6 @@ import {
   type IrRefineResult
 } from '@shared/ipc'
 import { runManualCompaction } from '../modules/compactionScheduler'
-import { probeQuotaIfStale } from '../modules/geminiQuotaTracker'
 import { broadcastIrUpdated } from '../modules/irBroadcast'
 import { getWorkspacePaths, loadWorkspaceIR } from '../modules/workspaceStore'
 
@@ -24,9 +23,6 @@ import { getWorkspacePaths, loadWorkspaceIR } from '../modules/workspaceStore'
 //   5. saveWorkspaceIRAtomic + archive + turns rewrite
 //
 // 본 함수는 CompactionScheduler.runManualCompaction wrapper.
-
-// N(Fix 4): refine 후 자동 quota probe — refine 호출이 gemini-flash를 썼다면 quota %가 변했을 가능성.
-const QUOTA_PROBE_STALE_AFTER_REFINE_MS = 5 * 60 * 1000
 
 export async function runIrRefine(args: {
   workspaceId: string
@@ -70,10 +66,7 @@ async function handleIrRefine(_e: unknown, req: IrRefineRequest): Promise<IrRefi
   if (result.ok && result.ir) {
     broadcastIrUpdated({ workspaceId: req.workspaceId, source: 'manual' })
   }
-  // Fix 4 — refine 끝나면 quota probe trigger (fire-and-forget, throttled).
-  void probeQuotaIfStale(QUOTA_PROBE_STALE_AFTER_REFINE_MS).catch((err) => {
-    log.warn('quota probe (ir:refine trigger) 실패 — 무시', { err: String(err) })
-  })
+  // refine 종료 후 quota probe는 RefineDispatcher가 *실제 spawn된 CLI*만 trigger한다.
   return result
 }
 

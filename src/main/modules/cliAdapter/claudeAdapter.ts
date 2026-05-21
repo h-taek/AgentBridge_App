@@ -63,24 +63,26 @@ async function spawnInteractive(
   const claudeSessionId = req.sessionId ?? randomUUID()
   const args: string[] = []
 
-  if (isNewSession) {
-    args.push('--session-id', claudeSessionId)
-  }
   // hook config 격리 settings.json을 항상 --settings로 가리킨다. HookInstaller가 미호출 상태면
   // 누락되어 hook 없이 spawn (테스트/오류 fallback).
+  const settingsArgs: string[] = []
   if (req.claudeSettingsPath) {
-    args.push('--settings', req.claudeSettingsPath)
+    settingsArgs.push('--settings', req.claudeSettingsPath)
   }
-  if (!isNewSession) {
-    // resume — claude가 메시지 교환 전 닫힌 빈 세션은 jsonl이 없어 즉시 fail.
-    // 디스크 가드로 사용자에게 명확한 메시지 + 해결책 제시.
+
+  if (isNewSession) {
+    args.push('--session-id', claudeSessionId, ...settingsArgs)
+  } else {
+    // resume — claude는 메시지 교환 전 닫힌 빈 세션 jsonl을 영속화하지 않는다. resume 시 jsonl 없으면
+    // 즉시 exit 1. 빈 세션 reopen 케이스 fallback: 기존 sessionId 유지하면서 새 세션처럼 spawn.
+    // 사용자가 첫 메시지 보내면 jsonl이 만들어지고, 다음 reopen은 정상 resume.
     const exists = await claudeSessionFileExists(claudeSessionId)
     if (!exists) {
-      throw new Error(
-        `claude 세션 ${claudeSessionId}을(를) 찾을 수 없습니다 — 메시지 교환 전 닫힌 빈 세션은 claude가 영속화하지 않습니다. 이 thread를 삭제하고 새로 만드세요.`
-      )
+      log.warn('claude resume 불가 — 새 세션으로 fallback (sessionId 유지)', { claudeSessionId })
+      args.push('--session-id', claudeSessionId, ...settingsArgs)
+    } else {
+      args.push('--resume', claudeSessionId, ...settingsArgs)
     }
-    args.push('--resume', claudeSessionId)
   }
 
   const env = buildAdapterEnv({ shellPath: getShellPath() })
@@ -121,7 +123,12 @@ async function spawnRefineIRClaude(req: SpawnRefineRequest): Promise<SpawnRefine
   const env = buildAdapterEnv({ shellPath: getShellPath() })
   let assistantText = ''
   let usage: RefineUsage | undefined
-  log.info('claude spawnRefineIR', { promptLen: req.prompt.length, cwd: req.cwd })
+  log.info('claude spawnRefineIR', {
+    promptLen: req.prompt.length,
+    cwd: req.cwd,
+    modelHint: req.modelHint
+  })
+  const modelArgs = req.modelHint ? ['--model', req.modelHint] : []
   const base = await runRefineSpawn({
     command: cliPath,
     args: [
@@ -131,7 +138,8 @@ async function spawnRefineIRClaude(req: SpawnRefineRequest): Promise<SpawnRefine
       'stream-json',
       '--verbose',
       '--permission-mode',
-      'acceptEdits'
+      'acceptEdits',
+      ...modelArgs
     ],
     cwd: req.cwd,
     env,

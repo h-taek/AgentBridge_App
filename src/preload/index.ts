@@ -1,5 +1,4 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
-import { electronAPI } from '@electron-toolkit/preload'
 // renderer log → main.log 통합. preload 진입 시 IPC 브릿지 등록 (electron-log v5 표준).
 // renderer 측은 `import log from 'electron-log/renderer'`로 사용.
 import 'electron-log/preload'
@@ -40,10 +39,10 @@ import type {
   TurnsUpdatedEvent,
   PtyDataEvent,
   PtyExitEvent,
-  PtyStartRequest,
-  PtyStartResult,
+  QuotaProbeRequest,
   QuotaProbeResult,
-  QuotaSnapshot,
+  QuotaSnapshotsByCli,
+  QuotaUpdatedEvent,
   SessionActivateResult,
   SessionCloseRequest,
   SessionCreateRequest,
@@ -149,9 +148,9 @@ const agentbridge = {
   envProbe: (): Promise<EnvProbeResult> => ipcRenderer.invoke(IpcChannel.EnvProbe),
   openPath: (target: string): Promise<void> => ipcRenderer.invoke(IpcChannel.AppOpenPath, target),
   openExternal: (url: string): Promise<void> => ipcRenderer.invoke(IpcChannel.AppOpenExternal, url),
+  // PTY는 sessions.create/open이 main 내부에서 spawn한다. renderer는 write/resize/kill + 데이터 구독만.
+  // (pty:start IPC는 임의 명령 실행 표면이라 v0.0.4에서 제거 — sessions API 경유.)
   pty: {
-    start: (req: PtyStartRequest): Promise<PtyStartResult> =>
-      ipcRenderer.invoke(IpcChannel.PtyStart, req),
     write: (sessionId: string, data: string): Promise<void> =>
       ipcRenderer.invoke(IpcChannel.PtyWrite, sessionId, data),
     resize: (sessionId: string, cols: number, rows: number): Promise<void> =>
@@ -264,13 +263,22 @@ const agentbridge = {
   settings: {
     get: (): Promise<AppSettings> => ipcRenderer.invoke(IpcChannel.SettingsGet),
     set: (patch: Partial<AppSettings>): Promise<AppSettings> =>
-      ipcRenderer.invoke(IpcChannel.SettingsSet, patch)
+      ipcRenderer.invoke(IpcChannel.SettingsSet, patch),
+    // settings:set 직후 main이 broadcast — 다른 패널/윈도우 즉시 반영.
+    onUpdated: (cb: (settings: AppSettings) => void): Unsubscribe => {
+      const handler = (_: unknown, s: AppSettings): void => cb(s)
+      ipcRenderer.on(IpcChannel.SettingsUpdated, handler)
+      return () => {
+        ipcRenderer.off(IpcChannel.SettingsUpdated, handler)
+      }
+    }
   },
   quota: {
-    get: (): Promise<QuotaSnapshot> => ipcRenderer.invoke(IpcChannel.QuotaGet),
-    probe: (): Promise<QuotaProbeResult> => ipcRenderer.invoke(IpcChannel.QuotaProbe),
-    onUpdated: (cb: (snap: QuotaSnapshot) => void): Unsubscribe => {
-      const handler = (_: unknown, snap: QuotaSnapshot): void => cb(snap)
+    get: (): Promise<QuotaSnapshotsByCli> => ipcRenderer.invoke(IpcChannel.QuotaGet),
+    probe: (req: QuotaProbeRequest): Promise<QuotaProbeResult> =>
+      ipcRenderer.invoke(IpcChannel.QuotaProbe, req),
+    onUpdated: (cb: (evt: QuotaUpdatedEvent) => void): Unsubscribe => {
+      const handler = (_: unknown, evt: QuotaUpdatedEvent): void => cb(evt)
       ipcRenderer.on(IpcChannel.QuotaUpdated, handler)
       return () => {
         ipcRenderer.off(IpcChannel.QuotaUpdated, handler)
@@ -316,16 +324,16 @@ const agentbridge = {
 
 export type AgentBridgeApi = typeof agentbridge
 
+// curated `window.agentbridge` API만 노출. 이전엔 `@electron-toolkit/preload`의 범용 electronAPI
+// (`window.electron.ipcRenderer.invoke/...`)를 함께 노출해 모든 IPC 채널이 우회 가능했으나
+// v0.0.4에서 제거 — renderer는 명시 메서드만 사용.
 if (process.contextIsolated) {
   try {
-    contextBridge.exposeInMainWorld('electron', electronAPI)
     contextBridge.exposeInMainWorld('agentbridge', agentbridge)
   } catch (error) {
     console.error(error)
   }
 } else {
-  // @ts-ignore (define in dts)
-  window.electron = electronAPI
   // @ts-ignore (define in dts)
   window.agentbridge = agentbridge
 }

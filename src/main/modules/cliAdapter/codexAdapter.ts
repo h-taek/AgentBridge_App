@@ -105,10 +105,16 @@ async function spawnRefineIRCodex(req: SpawnRefineRequest): Promise<SpawnRefineR
   const env = buildAdapterEnv({ shellPath: getShellPath() })
   let assistantText = ''
   let usage: RefineUsage | undefined
-  log.info('codex spawnRefineIR', { promptLen: req.prompt.length, cwd: req.cwd })
+  log.info('codex spawnRefineIR', {
+    promptLen: req.prompt.length,
+    cwd: req.cwd,
+    modelHint: req.modelHint
+  })
+  // -c model="..."는 codex exec 앞에 위치해야 함 (top-level config override).
+  const modelArgs = req.modelHint ? ['-c', `model="${req.modelHint}"`] : []
   const base = await runRefineSpawn({
     command: cliPath,
-    args: ['exec', '--json', '--skip-git-repo-check', '-s', 'read-only', '-'],
+    args: [...modelArgs, 'exec', '--json', '--skip-git-repo-check', '-s', 'read-only', '-'],
     cwd: req.cwd,
     env,
     stdinPayload: req.prompt,

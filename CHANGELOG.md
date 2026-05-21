@@ -8,13 +8,22 @@
 
 ### Changed
 
-- **설정 → 업데이트 확인** — 이전엔 GitHub Releases 페이지를 외부 브라우저로 여는 단순 링크였습니다. 이제 클릭하면 실제 `electron-updater`의 `checkForUpdates`가 호출되고, 진행 상태(확인 중 → 새 버전 발견 → 다운로드 중 N% → 완료 / 최신입니다 / 에러)가 row에 실시간 표시됩니다. 별도 "릴리즈 노트 보기" row가 GitHub 페이지 외부 링크 역할을 이어받습니다.
+- **Gemini CLI → Antigravity 리브랜드** — Google이 Gemini CLI 후속작으로 Antigravity CLI(`agy`)를 발표하면서 AgentBridge가 사용하는 명령과 표기를 전부 갱신했습니다. 기존 Gemini 세션·설정은 자동 마이그레이션되어 호환됩니다.
+- **요약 정책 4단계 재설계** — `우선순위`(설정한 순서대로 시도, 실패 시 다음 CLI) / `고정`(단일 CLI만) / `활성 모델`(가장 최근 채팅한 CLI) / `끔`(요약 안 함). 우선순위/고정에서는 비용이 가장 낮은 모델이 자동 선택됩니다.
+- **메모리 패널 Refine/Quota 카드 재디자인** — 세 CLI 사용량을 한 줄로 나열, 다음 정제에 사용될 활성 CLI만 이름·상태 배지로 강조 표시.
+- **설정 → 업데이트 확인** — 이전엔 GitHub Releases 페이지를 외부 브라우저로 여는 단순 링크였습니다. 이제 클릭하면 실제 업데이트 체크가 호출되고, 진행 상태(확인 중 → 새 버전 발견 → 다운로드 중 N% → 완료 / 최신입니다 / 에러)가 row에 실시간 표시됩니다. 별도 "릴리즈 노트 보기" row가 GitHub 페이지 외부 링크 역할을 이어받습니다.
 - ad-hoc 서명 단계에선 자동 설치까진 동작 안 하고 다운로드까지만 동작 (정식 노타리 후 완전 자동 설치 가능). 진행 상황은 동일하게 표시됩니다.
+
+### Added
+
+- **세 CLI 사용량 직접 측정** — 정제 직후 사용된 CLI를 백그라운드로 띄워 `/usage` · `/status` 슬래시 명령으로 현재 quota를 직접 확인합니다. 설정 패널의 "지금 확인" 버튼으로 임의 CLI를 즉시 측정할 수도 있습니다. 한도 근접/초과 시 다음 정제부터 다른 CLI로 자동 폴백.
+- **측정용 세션 흔적 정리** — 측정을 위해 임시로 띄운 CLI 세션은 종료와 동시에 자체 conversation 파일까지 삭제. 다음에 같은 CLI를 외부에서 `--resume` 등으로 열어도 측정용 세션이 보이지 않습니다.
+- **설정 변경 즉시 반영** — 한 패널/윈도우에서 정제 정책을 바꾸면 다른 모든 곳의 활성 CLI 표시가 즉시 갱신됩니다.
 
 ### Added — 진단
 
-- **`appUpdater:status` 통합 broadcast** — main이 `electron-updater`의 모든 이벤트(checking / available / not-available / downloading / downloaded / error)를 단일 `AppUpdaterStatus` payload로 변환해 모든 윈도우에 broadcast. renderer가 한 채널만 구독하면 됨.
-- **`appUpdater:get` IPC** — 설정 모달 마운트 시 마지막 status 즉시 조회 (trigger 없음). polling으로 이미 확보된 상태를 즉시 표시.
+- **자동 업데이트 진행 상태 broadcast** — 업데이트 확인 → 다운로드 → 설치 대기 사이 모든 상태가 단일 채널로 전파되어 어느 윈도우에서든 동일하게 표시됩니다.
+- **Quota 측정 디버그 로그** — 측정 실패 시 응답 본문 일부를 main.log에 남겨 CLI TUI 변경에 따른 회귀를 빠르게 진단할 수 있습니다.
 
 ## [0.0.3] — 2026-05-13
 

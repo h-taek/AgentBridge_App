@@ -18,12 +18,13 @@ import type { CliKind } from '@shared/ipc'
 //   - markdown/TOML: `<!-- AgentBridge:start --> ... <!-- AgentBridge:end -->` 또는
 //     `# AgentBridge:start` ... `# AgentBridge:end` (TOML 주석은 # 기반)
 //
-// Cwd 침범 정책 — architecture §15.2 (M3 N 후속 정리 2026-05-11에 AGENTS.override.md 폐기):
+// Cwd 침범 정책 — architecture §15.2 (2026 agy 리브랜드 시점에 갱신):
 //   - 사용자 워크스페이스 cwd엔 3 파일만 생성:
-//     .codex/hooks.json / .codex/config.toml / .gemini/settings.json
+//     .codex/hooks.json / .codex/config.toml / .agents/hooks.json
 //   - claude는 우리 Application Support 안 격리 settings.json만 (cwd 무침범)
 //   - 사용자가 직접 만든 cwd/AGENTS.md / CLAUDE.md / GEMINI.md는 절대 건드리지 않음
 //     (memory.instructionsCreate는 사용자 명시 액션으로만 빈 파일 생성)
+//   - legacy `.gemini/settings.json`(이전 버전 hook 설치 잔재)은 agy hook 설치 시 자동 정리
 
 const TOML_MARKER_START = '# AgentBridge:start'
 const TOML_MARKER_END = '# AgentBridge:end'
@@ -65,6 +66,13 @@ function quoteArg(s: string): string {
 // hook 이벤트 이름 — helper binary가 stdout JSON의 hookEventName으로 *정확히 일치하는 값*을 emit해야
 // 한다. 그렇지 않으면 CLI host가 "expected X but got Y" 에러로 hook을 거부 (claude는 warning, codex
 // 는 fatal로 자발 종료 가능성). 따라서 hook command에 --event 인자로 박는다.
+//
+// agy(Antigravity) 이벤트:
+//   - PreInvocation: 모델 호출 직전 (= 매 turn 시작점, 메모리 inject용)
+//   - PostInvocation: 도구 호출 후 모델 다음 turn 직전
+//   - Stop: execution loop 종료 시
+//   - PreToolUse / PostToolUse: 도구 호출 전후
+// agy schema는 구 gemini의 SessionStart/BeforeAgent와 *완전 다르다*. 라이브 검증 후 보완 가능.
 export type HookEventName =
   | 'SessionStart'
   | 'UserPromptSubmit'
@@ -72,6 +80,8 @@ export type HookEventName =
   | 'PreToolUse'
   | 'PostToolUse'
   | 'Stop'
+  | 'PreInvocation'
+  | 'PostInvocation'
 
 export function buildHookCommand(opts: {
   helperPath: string
@@ -264,39 +274,75 @@ export async function installCodexHooks(opts: {
   return { hooksJsonPath, configTomlPath }
 }
 
-// ─── gemini — cwd/.gemini/settings.json 마커 블록 merge ────────────────
+// ─── agy(Antigravity) — cwd/.agents/hooks.json 마커 블록 merge ─────────
 //
-// architecture §14.8: SessionStart + BeforeAgent (gemini의 매 turn hook).
+// agy hook schema (agy 1.0.0 — `agy /hooks` 슬래시 명령 + binary string 분석 기반):
+//   {
+//     "<unique-hook-name>": {
+//       "enabled": true,
+//       "PreInvocation": [ { "type": "command", "command": "..." } ],
+//       "PostInvocation": [...],
+//       "Stop": [...]
+//     }
+//   }
+// 구 gemini의 hooks: { SessionStart, BeforeAgent } 객체와 *완전 다름*. agy는 top-level이
+// "hooks" 래퍼 없이 각 hook 이름이 root key가 된다.
+//
+// 이벤트 매핑:
+//   - 메모리 inject = PreInvocation (매 모델 호출 직전 = 매 turn 시작점)
+//   - PostInvocation/Stop은 향후 turn 기록 trigger 등에 활용 가능 (현재는 미사용)
+//
+// 파일 위치: <cwd>/.agents/hooks.json (project-level). agy global hooks는 `~/.gemini/config/hooks.json`.
 
-export async function installGeminiHooks(opts: {
+type AgyHookAction = {
+  type: 'command'
+  command: string
+}
+
+type AgyHookGroup = {
+  enabled?: boolean
+  PreInvocation?: AgyHookAction[]
+  PostInvocation?: AgyHookAction[]
+  Stop?: AgyHookAction[]
+  PreToolUse?: AgyHookAction[]
+  PostToolUse?: AgyHookAction[]
+  // AgentBridge 식별용 — 우리 entry만 골라 갱신/제거할 수 있게.
+  _agentbridge_managed?: true
+}
+
+type AgyHooksRoot = Record<string, AgyHookGroup>
+
+const AGENTBRIDGE_HOOK_NAME = 'agentbridge-memory'
+
+export async function installAgyHooks(opts: {
   cwd: string
   helperPath: string
   workspaceId: string
   userDataPath: string
-}): Promise<{ settingsJsonPath: string }> {
-  const geminiDir = path.join(opts.cwd, '.gemini')
-  const settingsJsonPath = path.join(geminiDir, 'settings.json')
+}): Promise<{ hooksJsonPath: string; legacyCleaned: boolean }> {
+  const agentsDir = path.join(opts.cwd, '.agents')
+  const hooksJsonPath = path.join(agentsDir, 'hooks.json')
   const commandFor = (event: HookEventName): string =>
     buildHookCommand({
       helperPath: opts.helperPath,
-      agent: 'gemini',
+      agent: 'agy',
       workspaceId: opts.workspaceId,
       userDataPath: opts.userDataPath,
       event
     })
 
-  const raw = await readFileIfExists(settingsJsonPath)
-  let existing: HooksRoot = {}
+  const raw = await readFileIfExists(hooksJsonPath)
+  let existing: AgyHooksRoot = {}
   if (raw) {
     try {
       const parsed = JSON.parse(raw)
-      if (isObject(parsed)) existing = parsed
+      if (isObject(parsed)) existing = parsed as AgyHooksRoot
     } catch {
-      const backup = `${settingsJsonPath}.broken.${Date.now()}.bak`
+      const backup = `${hooksJsonPath}.broken.${Date.now()}.bak`
       try {
         await fs.writeFile(backup, raw, 'utf8')
-        log.warn('gemini settings.json 파싱 실패 — 백업 후 fresh 작성', {
-          settingsJsonPath,
+        log.warn('agy .agents/hooks.json 파싱 실패 — 백업 후 fresh 작성', {
+          hooksJsonPath,
           backup
         })
       } catch {
@@ -304,18 +350,72 @@ export async function installGeminiHooks(opts: {
       }
     }
   }
-  const merged = mergeHooksJson(existing, {
-    SessionStart: {
-      matcher: '*',
-      hooks: [{ type: 'command', command: commandFor('SessionStart') }]
-    },
-    BeforeAgent: {
-      hooks: [{ type: 'command', command: commandFor('BeforeAgent') }]
-    }
-  })
-  await atomicWriteFile(settingsJsonPath, JSON.stringify(merged, null, 2))
 
-  return { settingsJsonPath }
+  // 우리 entry 식별·갱신 — _agentbridge_managed 플래그 또는 이름 기반.
+  // 사용자가 만든 다른 hook entry는 그대로 보존.
+  const merged: AgyHooksRoot = { ...existing }
+  merged[AGENTBRIDGE_HOOK_NAME] = {
+    enabled: true,
+    PreInvocation: [{ type: 'command', command: commandFor('PreInvocation') }],
+    _agentbridge_managed: true
+  }
+
+  await atomicWriteFile(hooksJsonPath, JSON.stringify(merged, null, 2))
+
+  // legacy cleanup — 이전 버전 hook 설치 잔재인 cwd/.gemini/settings.json의 우리 entry 제거.
+  const legacyCleaned = await cleanupLegacyGeminiSettings(opts.cwd)
+
+  return { hooksJsonPath, legacyCleaned }
+}
+
+// 구버전(M3 N 이전)에서 `installGeminiHooks`가 만든 cwd/.gemini/settings.json의
+// `_agentbridge_managed` entry를 제거. 다른 사용자 콘텐츠는 보존.
+async function cleanupLegacyGeminiSettings(cwd: string): Promise<boolean> {
+  const legacyPath = path.join(cwd, '.gemini', 'settings.json')
+  const raw = await readFileIfExists(legacyPath)
+  if (!raw) return false
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return false
+  }
+  if (!isObject(parsed)) return false
+  const root = parsed as HooksRoot
+  if (!isObject(root.hooks)) return false
+  const hooksMap = root.hooks as Record<string, HookEntry[]>
+  let touched = false
+  for (const [name, entries] of Object.entries(hooksMap)) {
+    if (!Array.isArray(entries)) continue
+    const filtered = entries.filter((e) => !(isObject(e) && e._agentbridge_managed === true))
+    if (filtered.length !== entries.length) {
+      touched = true
+      if (filtered.length === 0) {
+        delete hooksMap[name]
+      } else {
+        hooksMap[name] = filtered
+      }
+    }
+  }
+  if (!touched) return false
+  // hooks가 비어있으면 hooks 키 자체 제거, root가 비어있으면 파일 삭제.
+  if (Object.keys(hooksMap).length === 0) {
+    delete root.hooks
+  } else {
+    root.hooks = hooksMap
+  }
+  if (Object.keys(root).length === 0) {
+    try {
+      await fs.unlink(legacyPath)
+      log.info('legacy .gemini/settings.json 제거', { legacyPath })
+    } catch {
+      /* noop */
+    }
+    return true
+  }
+  await atomicWriteFile(legacyPath, JSON.stringify(root, null, 2))
+  log.info('legacy .gemini/settings.json _agentbridge_managed entry 정리', { legacyPath })
+  return true
 }
 
 // ─── TOML 마커 블록 merge ──────────────────────────────────────────────
@@ -351,8 +451,10 @@ export type InstallHooksResult = {
   claudeSettingsPath?: string
   // codex hooks.json 위치 (codex일 때만)
   codexHooksJsonPath?: string
-  // gemini settings.json 위치 (gemini일 때만)
-  geminiSettingsJsonPath?: string
+  // agy hooks.json 위치 (agy일 때만)
+  agyHooksJsonPath?: string
+  // legacy .gemini/settings.json _agentbridge_managed entry가 정리된 경우 true (agy 설치 시)
+  legacyGeminiCleaned?: boolean
 }
 
 export async function installHooksForSession(opts: {
@@ -395,14 +497,15 @@ export async function installHooksForSession(opts: {
       result.codexHooksJsonPath = hooksJsonPath
       break
     }
-    case 'gemini': {
-      const { settingsJsonPath } = await installGeminiHooks({
+    case 'agy': {
+      const { hooksJsonPath, legacyCleaned } = await installAgyHooks({
         cwd: opts.workspaceCwd,
         helperPath,
         workspaceId: opts.workspaceId,
         userDataPath: opts.userDataPath
       })
-      result.geminiSettingsJsonPath = settingsJsonPath
+      result.agyHooksJsonPath = hooksJsonPath
+      result.legacyGeminiCleaned = legacyCleaned
       break
     }
   }

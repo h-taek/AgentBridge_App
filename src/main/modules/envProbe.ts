@@ -4,7 +4,7 @@ import * as path from 'path'
 import type { CliKind, CliPresence, EnvProbeResult } from '@shared/ipc'
 
 const TIMEOUT_MS = 5000
-const CLI_KINDS: CliKind[] = ['claude', 'codex', 'gemini']
+const CLI_KINDS: CliKind[] = ['claude', 'codex', 'agy']
 
 // 사용자 login shell의 PATH 캡처. Electron이 GUI에서 launch될 때 PATH가 빈약하기 때문에
 // brew/asdf/nvm 등 사용자 개별 설치 경로를 잡으려면 login interactive zsh를 한 번 거쳐야 한다.

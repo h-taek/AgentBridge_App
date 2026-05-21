@@ -12,6 +12,7 @@ import type {
 } from '@shared/ipc'
 import type { IR } from '@shared/ir'
 import { withWorkspaceLock } from './workspaceLock'
+import { normalizeWorkspacePath, validateWorkspacePath } from './workspacePath'
 
 // M3 K 청크 — Workspace 데이터 모델 + 영속화.
 // architecture §14.2 / §14.3.
@@ -31,11 +32,10 @@ import { withWorkspaceLock } from './workspaceLock'
 //     isSessionEmpty=true인 세션은 자동으로 deleteSession되어 sessions[]에서 사라짐.
 //     작업 이력 있는 세션은 closedAt 마킹으로 보존(다음 reopen 시 부활).
 //
-// (3) sessions[].length === 0인 워크스페이스는 카드도 띄우지 않는다 — 세 안전망:
-//     (a) 워크스페이스 닫기 직후 — App.tsx handleCloseOpen이 sessions=0이면 자동
-//         workspaces.delete 호출
-//     (b) 부팅 시 — cleanupEmptyWorkspaces가 마이그레이션 직후 1회 정리
-//     (c) 카드 렌더 단계 — workspaces.filter(w => w.sessions.length > 0)
+// (3) 빈 워크스페이스(sessions[].length === 0) 정책 — 자동 삭제 *폐기* (2026-05-21).
+//     이전엔 부팅 시 cleanupEmptyWorkspaces로 일괄 정리했으나, 사용자가 빈 ws를 명시 휴지통으로
+//     관리하는 흐름이 더 직관적이라 자동 정리를 제거. 빈 ws는 사이드바에 카드로 표시되어 + 로
+//     세션 재추가 가능, 또는 휴지통으로 hard delete.
 //
 // ────────────────────────────────────────────────────────────────────────
 //
@@ -87,6 +87,25 @@ function getDirs(): WorkspaceDirs {
   return dirsCache
 }
 
+// workspaceId / sessionId 안전성 — randomUUID() 출력만 허용. legacy contextId 마이그레이션도 동일
+// 포맷이라 호환된다. 정규식 거치지 않으면 `path.join`의 `..` collapse로 userData 상위로 escape 가능
+// (예: workspaceId='../../etc' → fs.rm으로 임의 디렉토리 삭제).
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+function assertUuid(label: string, id: string): void {
+  if (typeof id !== 'string' || !UUID_PATTERN.test(id)) {
+    throw new Error(`${label} 형식이 UUID가 아닙니다: ${JSON.stringify(id)}`)
+  }
+}
+
+function assertWithinPrefix(targetDir: string, prefix: string, label: string): void {
+  const resolved = path.resolve(targetDir)
+  const resolvedPrefix = path.resolve(prefix)
+  if (resolved !== resolvedPrefix && !resolved.startsWith(resolvedPrefix + path.sep)) {
+    throw new Error(`${label} 경로가 허용 prefix 밖입니다: ${resolved}`)
+  }
+}
+
 export type WorkspacePaths = {
   dir: string
   meta: string
@@ -98,7 +117,11 @@ export type WorkspacePaths = {
 }
 
 export function getWorkspacePaths(workspaceId: string): WorkspacePaths {
-  const dir = path.join(getDirs().workspaces, workspaceId)
+  assertUuid('workspaceId', workspaceId)
+  const workspacesRoot = getDirs().workspaces
+  const dir = path.join(workspacesRoot, workspaceId)
+  // UUID 정규식 통과한 후에도 prefix 재확인 — 미래 호출자가 검증 우회한 경로를 직접 넘길 가능성 대비.
+  assertWithinPrefix(dir, workspacesRoot, 'workspace')
   return {
     dir,
     meta: path.join(dir, 'workspace.json'),
@@ -117,7 +140,10 @@ export type SessionPaths = {
 }
 
 export function getSessionPaths(workspaceId: string, sessionId: string): SessionPaths {
-  const sessionDir = path.join(getWorkspacePaths(workspaceId).sessionsDir, sessionId)
+  assertUuid('sessionId', sessionId)
+  const wsPaths = getWorkspacePaths(workspaceId)
+  const sessionDir = path.join(wsPaths.sessionsDir, sessionId)
+  assertWithinPrefix(sessionDir, wsPaths.sessionsDir, 'session')
   return {
     dir: sessionDir,
     meta: path.join(sessionDir, 'meta.json'),
@@ -170,13 +196,19 @@ export async function createWorkspace(
     kind: 'cli'
   }
 
-  const folderName = path.basename(input.workspacePath.trim()) || 'workspace'
+  // Finder "경로 복사" / zsh escape / 따옴표 / ~ 등 사용자 입력 변형을 OS cwd로 정상화.
+  // 미존재/파일 경로는 즉시 throw — 잘못된 저장으로 인한 spawn 후속 ENOENT를 사전 차단.
+  // home:submit이 자동 생성한 신규 폴더 등 "이미 검증된" 호출자도 동일 정규화 통과해 무해.
+  const normalizedPath = normalizeWorkspacePath(input.workspacePath)
+  validateWorkspacePath(normalizedPath)
+
+  const folderName = path.basename(normalizedPath.trim()) || 'workspace'
   const workspace: WorkspaceMeta = {
     workspaceId,
     title: input.title?.trim() || folderName,
     createdAt: now,
     updatedAt: now,
-    workspacePath: input.workspacePath,
+    workspacePath: normalizedPath,
     sessions: [firstSession],
     primarySessionId: sessionId,
     compactionInProgress: null
@@ -203,10 +235,26 @@ export async function createWorkspace(
   return { workspace, firstSession }
 }
 
+// legacy 마이그레이션 — 2026 agy(Antigravity) 리브랜드 이전 'gemini' 값을 'agy'로 in-place 치환.
+// 디스크의 workspace.json은 다음 atomic write(updateWorkspaceMeta 등) 시점에 자동 영속화됨.
+// session.model이 'gemini' 문자열을 가진 경우만 대상 — 타입 시스템 우회용 narrow cast.
+function migrateLegacyGeminiToAgy(meta: WorkspaceMeta): WorkspaceMeta {
+  let touched = false
+  const sessions = meta.sessions.map((s) => {
+    if ((s.model as unknown as string) === 'gemini') {
+      touched = true
+      return { ...s, model: 'agy' as CliKind }
+    }
+    return s
+  })
+  if (!touched) return meta
+  return { ...meta, sessions }
+}
+
 export async function loadWorkspace(workspaceId: string): Promise<WorkspaceMeta> {
   const paths = getWorkspacePaths(workspaceId)
   const raw = await fs.readFile(paths.meta, 'utf8')
-  const meta = JSON.parse(raw) as WorkspaceMeta
+  const meta = migrateLegacyGeminiToAgy(JSON.parse(raw) as WorkspaceMeta)
   workspaceTitleCache.set(meta.workspaceId, meta.title)
   return meta
 }
@@ -227,7 +275,7 @@ export async function listWorkspaces(): Promise<WorkspaceListEntry[]> {
     const metaPath = path.join(dir, name, 'workspace.json')
     try {
       const raw = await fs.readFile(metaPath, 'utf8')
-      const meta = JSON.parse(raw) as WorkspaceMeta
+      const meta = migrateLegacyGeminiToAgy(JSON.parse(raw) as WorkspaceMeta)
       if (typeof meta.workspaceId !== 'string' || meta.workspaceId.length === 0) continue
       workspaceTitleCache.set(meta.workspaceId, meta.title)
       // activeSessionCount는 메모리 derive — sessionActive 모듈에서 조회. K 청크 단계에선 0으로 표시.
@@ -269,37 +317,6 @@ export async function deleteWorkspace(workspaceId: string): Promise<void> {
   const paths = getWorkspacePaths(workspaceId)
   await fs.rm(paths.dir, { recursive: true, force: true })
   workspaceTitleCache.delete(workspaceId)
-}
-
-// 정책 (3-b) 안전망 — sessions[].length === 0 워크스페이스를 디스크에서 제거.
-// 부팅 시 1회 실행. handleCloseOpen 자동 정리가 race/오류로 빠뜨린 케이스 + 외부 수동 조작
-// 잔존을 정리. workspace.json 깨진 디렉토리는 listWorkspaces가 skip하므로 정상 메타가 있는
-// 빈 워크스페이스만 대상.
-export async function cleanupEmptyWorkspaces(): Promise<{ deleted: string[] }> {
-  const dir = getDirs().workspaces
-  let entries: string[] = []
-  try {
-    entries = await fs.readdir(dir)
-  } catch {
-    return { deleted: [] }
-  }
-  const deleted: string[] = []
-  for (const entry of entries) {
-    if (entry.startsWith('.') || entry.startsWith('_')) continue
-    const wsDir = path.join(dir, entry)
-    try {
-      const stat = await fs.stat(wsDir)
-      if (!stat.isDirectory()) continue
-      const ws = await loadWorkspace(entry)
-      if (ws.sessions.length === 0) {
-        await deleteWorkspace(entry)
-        deleted.push(entry)
-      }
-    } catch {
-      /* 단일 워크스페이스 실패는 다른 워크스페이스 처리에 영향 X */
-    }
-  }
-  return { deleted }
 }
 
 // 사용자가 워크스페이스를 삭제했을 때 *원본 thread 백업도 cascade 삭제*.
@@ -401,6 +418,7 @@ export type SessionUpdatePatch = Partial<{
   modelSessionId: string | null
   closedAt: string | null
   title: string | undefined
+  lastChattedAt: string
 }>
 
 export async function updateSessionMeta(
@@ -472,15 +490,6 @@ export async function readSessionReplay(workspaceId: string, sessionId: string):
 // user.jsonl 채널은 폐기됨 (GUI 입력창 제거 결정 2026-05-11). O 청크에서 turns.jsonl이
 // user/assistant 명시 분리 책임을 가짐.
 
-// refine 입력으로 활성 세션 replay 통합 또는 primarySession replay 읽음.
-// 다중 active 세션 시 단순 concat (시간순 보장 X — refine 모델이 휴리스틱 처리).
-// M3 N 첫 cut은 primarySessionId만 — multi-tab merge는 P 청크에서 정책 확정.
-export async function readWorkspacePrimaryReplay(workspaceId: string): Promise<string> {
-  const ws = await loadWorkspace(workspaceId)
-  if (!ws.primarySessionId) return ''
-  return readSessionReplay(workspaceId, ws.primarySessionId)
-}
-
 // ir.json 로드 — workspace 위치. createWorkspace가 '{}'로 초기화하므로 빈 IR이면 null.
 export async function loadWorkspaceIR(workspaceId: string): Promise<IR | null> {
   const paths = getWorkspacePaths(workspaceId)
@@ -524,14 +533,21 @@ export async function saveWorkspaceIRAtomic(workspaceId: string, ir: IR): Promis
 // 멱등 — 이미 마이그레이션된 워크스페이스는 skip.
 // 기존 threads/ 데이터는 *그대로 유지* (L 청크에서 archive 처리).
 
+// legacy threads/*.json은 2026 agy 리브랜드 이전 시점이라 'gemini' 키 / activeModel='gemini'를 가짐.
+// 파싱 시 'gemini' 문자열을 그대로 받고 normalizeLegacyMeta에서 'agy'로 치환.
+type LegacyCliKindRaw = CliKind | 'gemini'
 type LegacyThreadMeta = {
   contextId: string
   title: string
   createdAt: string
   updatedAt: string
-  activeModel: CliKind
+  activeModel: LegacyCliKindRaw
   workspacePath: string
-  sessions: { claude?: string; codex?: string; gemini?: string }
+  sessions: { claude?: string; codex?: string; agy?: string; gemini?: string }
+}
+
+function normalizeLegacyCliKind(raw: LegacyCliKindRaw): CliKind {
+  return raw === 'gemini' ? 'agy' : raw
 }
 
 // 일부 legacy thread JSON 파일이 *두 객체가 이어져 쓰여진* 손상 형태로 발견됨
@@ -705,7 +721,12 @@ export async function migrateThreadsToWorkspaces(threadsDir: string): Promise<Mi
       const migratedSessions: SessionMeta[] = []
       let primarySessionId: string | null = null
 
-      const modelsInOrder: CliKind[] = ['claude', 'codex', 'gemini']
+      const modelsInOrder: CliKind[] = ['claude', 'codex', 'agy']
+      // 'gemini' key는 legacy → 'agy' 슬롯에 우선 채워둠.
+      if (legacy.sessions?.gemini && !legacy.sessions.agy) {
+        legacy.sessions.agy = legacy.sessions.gemini
+      }
+      const activeModelNormalized = normalizeLegacyCliKind(legacy.activeModel)
       for (const model of modelsInOrder) {
         const modelSessionId = legacy.sessions?.[model]
         if (!modelSessionId) continue
@@ -718,7 +739,7 @@ export async function migrateThreadsToWorkspaces(threadsDir: string): Promise<Mi
           closedAt: now // 마이그레이션 시점엔 모두 비활성으로 기록 — 사용자가 다시 열어야 활성
         }
         migratedSessions.push(session)
-        if (model === legacy.activeModel) primarySessionId = sessionId
+        if (model === activeModelNormalized) primarySessionId = sessionId
       }
 
       // activeModel이 sessions에 없는 경우 (예: legacy.sessions가 비어있는 경우 = M1 직후) → 빈 세션 추가
@@ -726,7 +747,7 @@ export async function migrateThreadsToWorkspaces(threadsDir: string): Promise<Mi
         const sessionId = randomUUID()
         const fallbackSession: SessionMeta = {
           sessionId,
-          model: legacy.activeModel,
+          model: activeModelNormalized,
           modelSessionId: null,
           createdAt: legacy.createdAt,
           closedAt: now

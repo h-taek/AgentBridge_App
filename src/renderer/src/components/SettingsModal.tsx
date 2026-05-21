@@ -3,10 +3,12 @@ import type {
   AppHealth,
   AppSettings,
   AppUpdaterStatus,
+  CliKind,
   EnvProbeResult,
   LanguageCode,
   RefineModelPolicy,
-  ThemeMode
+  ThemeMode,
+  TurnsAssistantDetail
 } from '@shared/ipc'
 import {
   ArrowLeftIcon,
@@ -35,18 +37,25 @@ import appIcon from '../../../../resources/icon.png'
 const GITHUB_URL = 'https://github.com/h-taek/AgentBridge'
 
 const REFINE_POLICY_LABEL: Record<RefineModelPolicy, string> = {
-  auto: '자동',
-  'gemini-flash': 'Gemini Flash',
+  priority: '기본 (우선순위)',
+  fixed: '고정',
   active: '활성 모델',
   off: '끔'
 }
 
 const REFINE_POLICY_DESC: Record<RefineModelPolicy, string> = {
-  auto: 'Gemini 우선 · 한도 초과 시 활성 모델 폴백',
-  'gemini-flash': 'Gemini Flash 강제 · 폴백 없음',
-  active: '활성 모델로 요약 · 토큰은 사용자 부담',
-  off: '요약 사용 안 함'
+  priority: 'CLI 우선순위대로 시도 · 실패/한도 초과 시 다음 CLI로',
+  fixed: '특정 CLI만 사용 · 실패 시 정제 스킵',
+  active: '마지막 채팅 CLI 사용 · 실패 시 정제 스킵',
+  off: '정제 사용 안 함'
 }
+
+const CLI_LABEL: Record<CliKind, string> = {
+  claude: 'Claude',
+  codex: 'Codex',
+  agy: 'Antigravity'
+}
+const CLI_ORDER_FULL: CliKind[] = ['agy', 'codex', 'claude']
 
 const THEME_LABEL: Record<ThemeMode, string> = {
   dark: '다크',
@@ -59,12 +68,80 @@ const LANGUAGE_LABEL: Record<LanguageCode, string> = {
   en: 'English'
 }
 
+const TURNS_DETAIL_LABEL: Record<TurnsAssistantDetail, string> = {
+  full: '원문',
+  compact: '압축',
+  minimal: '최소'
+}
+const TURNS_DETAIL_DESC: Record<TurnsAssistantDetail, string> = {
+  full: '응답 원본 그대로 저장 (최대 50KB).',
+  compact: '응답의 앞 400자 + 뒤 100자만 저장 (기본값).',
+  minimal: '응답의 앞 150자 + 뒤 50자만 저장.'
+}
+
 type SubPage = 'main' | 'cli' | 'shortcuts' | 'help' | 'license'
 
 type Props = {
   health: AppHealth | null
   env: EnvProbeResult | null
   onClose: () => void
+}
+
+// priority 정책의 CLI 우선순위 list 편집 row — 위/아래 화살표로 순서 조정.
+function PriorityOrderRow({
+  order,
+  onUpdate
+}: {
+  order: CliKind[]
+  onUpdate: (next: CliKind[]) => void
+}): React.JSX.Element {
+  // missing CLI를 끝에 자동 추가하여 모든 CLI 표시.
+  const fullOrder: CliKind[] = [...order]
+  for (const k of CLI_ORDER_FULL) {
+    if (!fullOrder.includes(k)) fullOrder.push(k)
+  }
+  const move = (idx: number, delta: -1 | 1): void => {
+    const next = [...fullOrder]
+    const swapIdx = idx + delta
+    if (swapIdx < 0 || swapIdx >= next.length) return
+    ;[next[idx], next[swapIdx]] = [next[swapIdx], next[idx]]
+    onUpdate(next)
+  }
+  return (
+    <div className="settings-row settings-row-column">
+      <div className="settings-row-line">
+        <SparkleIcon className="settings-row-icon" />
+        <span className="settings-row-label">우선순위</span>
+        <span className="settings-row-value settings-row-desc">위에서부터 시도</span>
+      </div>
+      <div className="settings-priority-list">
+        {fullOrder.map((cli, idx) => (
+          <div key={cli} className="settings-priority-item">
+            <span className={`ws-session-dot model-${cli}`} />
+            <span className="settings-priority-label">{CLI_LABEL[cli]}</span>
+            <button
+              className="settings-priority-btn"
+              onClick={() => move(idx, -1)}
+              disabled={idx === 0}
+              aria-label="위로"
+              title="위로"
+            >
+              ↑
+            </button>
+            <button
+              className="settings-priority-btn"
+              onClick={() => move(idx, 1)}
+              disabled={idx === fullOrder.length - 1}
+              aria-label="아래로"
+              title="아래로"
+            >
+              ↓
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
 }
 
 export function SettingsModal({ health, env, onClose }: Props): React.JSX.Element {
@@ -401,16 +478,40 @@ function MainPage({
             </span>
             <select
               className="settings-row-select"
-              value={settings?.refineModel ?? 'auto'}
+              value={settings?.refineModel ?? 'priority'}
               onChange={(e) => void onUpdate({ refineModel: e.target.value as RefineModelPolicy })}
               title="요약(refine) LLM 선택"
             >
-              <option value="auto">{REFINE_POLICY_LABEL.auto}</option>
-              <option value="gemini-flash">{REFINE_POLICY_LABEL['gemini-flash']}</option>
+              <option value="priority">{REFINE_POLICY_LABEL.priority}</option>
+              <option value="fixed">{REFINE_POLICY_LABEL.fixed}</option>
               <option value="active">{REFINE_POLICY_LABEL.active}</option>
               <option value="off">{REFINE_POLICY_LABEL.off}</option>
             </select>
           </div>
+          {settings?.refineModel === 'priority' && (
+            <PriorityOrderRow
+              order={settings.refinePriorityOrder}
+              onUpdate={(next) => void onUpdate({ refinePriorityOrder: next })}
+            />
+          )}
+          {settings?.refineModel === 'fixed' && (
+            <div className="settings-row">
+              <SparkleIcon className="settings-row-icon" />
+              <span className="settings-row-label">고정 CLI</span>
+              <span className="settings-row-value settings-row-desc">선택한 CLI로만 정제 시도</span>
+              <select
+                className="settings-row-select"
+                value={settings.refineFixedCli}
+                onChange={(e) => void onUpdate({ refineFixedCli: e.target.value as CliKind })}
+              >
+                {CLI_ORDER_FULL.map((k) => (
+                  <option key={k} value={k}>
+                    {CLI_LABEL[k]}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
       </div>
 
@@ -432,6 +533,25 @@ function MainPage({
             >
               <FolderIcon />
             </button>
+          </div>
+          <div className="settings-row">
+            <DatabaseIcon className="settings-row-icon" />
+            <span className="settings-row-label">응답 보존 정도</span>
+            <span className="settings-row-value settings-row-desc">
+              {settings ? TURNS_DETAIL_DESC[settings.turnsAssistantDetail] : ''}
+            </span>
+            <select
+              className="settings-row-select"
+              value={settings?.turnsAssistantDetail ?? 'compact'}
+              onChange={(e) =>
+                void onUpdate({ turnsAssistantDetail: e.target.value as TurnsAssistantDetail })
+              }
+              title="turns.jsonl에 저장되는 응답 길이"
+            >
+              <option value="full">{TURNS_DETAIL_LABEL.full}</option>
+              <option value="compact">{TURNS_DETAIL_LABEL.compact}</option>
+              <option value="minimal">{TURNS_DETAIL_LABEL.minimal}</option>
+            </select>
           </div>
         </div>
       </div>
@@ -669,7 +789,7 @@ function HelpPage(): React.JSX.Element {
               있습니다. CLI 환경 점검이나 잡일에 활용하세요.
             </li>
             <li>
-              <strong>Gemini quota 자동 폴백</strong> — Gemini CLI footer의 사용량 표시(
+              <strong>Antigravity quota 자동 폴백</strong> — agy CLI footer의 사용량 표시(
               <code>X% used</code>)를 자동 감지해 95% 이상이면 활성 모델로 폴백합니다. UTC 자정에
               자동 해제됩니다.
             </li>
@@ -682,13 +802,13 @@ function HelpPage(): React.JSX.Element {
         <div className="settings-card-list settings-card-list-pad">
           <ul className="settings-help-list">
             <li>
-              각 CLI(claude / codex / gemini)는 사전에 설치되어 PATH에 등록되어 있어야 합니다. 감지
-              결과는 &quot;CLI 감지&quot; 페이지에서 확인하세요.
+              각 CLI(claude / codex / agy(Antigravity))는 사전에 설치되어 PATH에 등록되어 있어야
+              합니다. 감지 결과는 &quot;CLI 감지&quot; 페이지에서 확인하세요.
             </li>
             <li>
               워크스페이스 폴더에 다음 3개 파일이 마커 블록 merge로 추가됩니다 —{' '}
               <code>.codex/hooks.json</code>, <code>.codex/config.toml</code>,{' '}
-              <code>.gemini/settings.json</code>. 마커 블록 외 사용자 콘텐츠는 변경되지 않습니다.
+              <code>.agents/hooks.json</code>. 마커 블록 외 사용자 콘텐츠는 변경되지 않습니다.
               claude는 워크스페이스 폴더에 어떤 파일도 만들지 않습니다.
             </li>
             <li>
@@ -701,12 +821,12 @@ function HelpPage(): React.JSX.Element {
               IR을 다시 주입합니다. 메모리 자체를 비우려면 메모리 패널의 초기화 버튼을 사용하세요.
             </li>
             <li>
-              Gemini의 무료 quota는 인터랙티브 세션 footer로만 정확히 측정됩니다. 한도 근접 시
+              Antigravity의 무료 quota는 인터랙티브 세션 footer로만 정확히 측정됩니다. 한도 근접 시
               자동으로 활성 모델로 폴백하며 UTC 자정에 자동 해제됩니다.
             </li>
             <li>
               메인 모델 메시지는 사용자가 인증한 각 CLI를 통해 그 CLI가 원래 통신하는 백엔드
-              (Anthropic / OpenAI / Google)로만 전송됩니다. IR 정제는 인증된 Gemini를 통해서만
+              (Anthropic / OpenAI / Google)로만 전송됩니다. IR 정제는 인증된 Antigravity를 통해서만
               전송됩니다. 이 두 경로 외 어떤 외부 서비스로도 전송되지 않습니다.
             </li>
           </ul>

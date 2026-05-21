@@ -3,33 +3,37 @@ import log from 'electron-log/main'
 import {
   IpcChannel,
   type AppSettings,
+  type QuotaProbeRequest,
   type QuotaProbeResult,
-  type QuotaSnapshot
+  type QuotaSnapshotsByCli
 } from '@shared/ipc'
 import { loadSettings, saveSettings } from '../modules/settings'
-import { getQuotaSnapshot, probeQuotaInBackground } from '../modules/geminiQuotaTracker'
+import { getAllQuotaSnapshots, probeQuotaInBackground } from '../modules/cliQuotaTracker'
+import { broadcastToAll } from '../modules/windowManager'
 
-// settings:get/set — M3 N 청크. UI가 refineModel 토글에 사용.
+// settings:get/set — refineModel 정책 토글에 사용.
 async function handleSettingsGet(): Promise<AppSettings> {
   return loadSettings()
 }
 
 async function handleSettingsSet(_e: unknown, patch: Partial<AppSettings>): Promise<AppSettings> {
   log.info('settings:set', patch)
-  return saveSettings(patch)
+  const next = await saveSettings(patch)
+  // 다른 패널/윈도우에 즉시 반영 (RefineSettingsPanel/IrPanel 활성 CLI 라벨 등).
+  broadcastToAll(IpcChannel.SettingsUpdated, next)
+  return next
 }
 
-// quota:get — 현재 영속화된 quota snapshot. UI 배지가 폴링.
-async function handleQuotaGet(): Promise<QuotaSnapshot> {
-  return getQuotaSnapshot()
+// quota:get — 세 CLI 영속화된 snapshot 일괄. UI 폴링.
+async function handleQuotaGet(): Promise<QuotaSnapshotsByCli> {
+  return getAllQuotaSnapshots()
 }
 
-// quota:probe — gemini PTY를 background로 spawn → footer "% used" 캡처 → SIGTERM.
-// 사용자 명시 액션(RefineSettingsPanel "지금 확인" 버튼). 자동 호출 없음.
-async function handleQuotaProbe(): Promise<QuotaProbeResult> {
-  log.info('quota:probe 호출')
-  const result = await probeQuotaInBackground()
-  return result
+// quota:probe — 특정 CLI를 background PTY spawn + 슬래시 명령 + 응답 캡처 + cleanup.
+// 사용자 명시 액션(RefineSettingsPanel "지금 확인" 버튼) 또는 refine 후 자동 호출.
+async function handleQuotaProbe(_e: unknown, req: QuotaProbeRequest): Promise<QuotaProbeResult> {
+  log.info('quota:probe 호출', { cli: req.cli })
+  return probeQuotaInBackground(req.cli)
 }
 
 export function registerSettingsHandlers(): void {

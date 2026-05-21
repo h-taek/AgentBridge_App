@@ -30,6 +30,10 @@ function App(): React.JSX.Element {
   const [openSessionId, setOpenSessionId] = useState<string | null>(null)
   const [openWorkspace, setOpenWorkspace] = useState<WorkspaceMeta | null>(null)
   const [attachments, setAttachments] = useState<Map<string, CliSpawnInteractiveResult>>(new Map())
+  // 세션 spawn 시 hook 설치가 실패해 IR 주입이 비활성 상태로 진입한 경우 sessionId→reason.
+  // SessionTabs가 이 set을 보고 해당 탭에 "메모리 비활성" 배지를 표시한다.
+  // 워크스페이스 전환/세션 close 시 정리.
+  const [hookDisabledMap, setHookDisabledMap] = useState<Map<string, string>>(new Map())
   const [workspacePath, setWorkspacePath] = useState<string>('')
   const [workspaceNameDraft, setWorkspaceNameDraft] = useState<string>('')
   const [initialModel, setInitialModel] = useState<CliKind>('claude')
@@ -90,6 +94,7 @@ function App(): React.JSX.Element {
           removedWorkspaceId: evt.removedWorkspaceId
         })
         setAttachments(new Map())
+        setHookDisabledMap(new Map())
         setOpenWorkspaceId(null)
         setOpenSessionId(null)
         setOpenWorkspace(null)
@@ -97,6 +102,20 @@ function App(): React.JSX.Element {
     })
     return off
   }, [openWorkspaceId, reloadWorkspaces])
+
+  // 채팅(turn 완료) 시점에 현재 열린 워크스페이스의 sessions[lastChattedAt] 갱신 → 좌사이드바
+  // 세션 정렬 + 탭 정렬 반영. (워크스페이스 자체 정렬은 갱신 안 함 — 사용자 요청)
+  useEffect(() => {
+    const off = window.agentbridge.memory.onTurnsUpdated((evt) => {
+      if (evt.workspaceId === openWorkspaceId) {
+        void window.agentbridge.workspaces
+          .get(evt.workspaceId)
+          .then((ws) => setOpenWorkspace(ws))
+          .catch(() => undefined)
+      }
+    })
+    return off
+  }, [openWorkspaceId])
 
   // codex thread_id 비동기 캡처
   useEffect(() => {
@@ -152,6 +171,23 @@ function App(): React.JSX.Element {
     [openWorkspaceId, attachments]
   )
 
+  // sessions:create / sessions:open / home:submit 결과에 hookDisabledReason이 채워져 있으면
+  // 해당 sessionId를 hookDisabledMap에 추가, 없으면 제거(재spawn이 정상 hook 설치한 케이스).
+  const applyHookStatus = useCallback((sessionId: string, reason: string | undefined): void => {
+    setHookDisabledMap((prev) => {
+      const has = prev.has(sessionId)
+      if (reason) {
+        const next = new Map(prev)
+        next.set(sessionId, reason)
+        return next
+      }
+      if (!has) return prev
+      const next = new Map(prev)
+      next.delete(sessionId)
+      return next
+    })
+  }, [])
+
   const handleCreateWorkspace = useCallback(async () => {
     if (!initialModelReady || !trimmedWorkspace || busy) return
     log.info('App.handleCreateWorkspace', {
@@ -178,6 +214,7 @@ function App(): React.JSX.Element {
       const newAttachments = new Map<string, CliSpawnInteractiveResult>()
       newAttachments.set(activated.session.sessionId, activated.pty)
       setAttachments(newAttachments)
+      applyHookStatus(activated.session.sessionId, activated.hookDisabledReason)
       setOpenWorkspaceId(created.workspace.workspaceId)
       setOpenSessionId(activated.session.sessionId)
       setOpenWorkspace(activated.workspace)
@@ -195,7 +232,8 @@ function App(): React.JSX.Element {
     workspaceNameDraft,
     busy,
     closeAllAttachments,
-    reloadWorkspaces
+    reloadWorkspaces,
+    applyHookStatus
   ])
 
   const handleOpenCard = useCallback(
@@ -216,6 +254,7 @@ function App(): React.JSX.Element {
         if (openWorkspaceId && openWorkspaceId !== w.workspaceId) {
           await closeAllAttachments('workspace-switch')
           setAttachments(new Map())
+          setHookDisabledMap(new Map())
         }
         setOpenWorkspaceId(w.workspaceId)
         setOpenSessionId(null)
@@ -237,6 +276,7 @@ function App(): React.JSX.Element {
         if (openWorkspaceId && openWorkspaceId !== w.workspaceId) {
           await closeAllAttachments('workspace-switch')
           setAttachments(new Map())
+          setHookDisabledMap(new Map())
         }
         const newAttachments = new Map<string, CliSpawnInteractiveResult>()
         let lastWorkspace: WorkspaceMeta | null = null
@@ -250,6 +290,7 @@ function App(): React.JSX.Element {
               sessionId: s.sessionId
             })
             newAttachments.set(activated.session.sessionId, activated.pty)
+            applyHookStatus(activated.session.sessionId, activated.hookDisabledReason)
             lastWorkspace = activated.workspace
           } catch (sessErr) {
             const msg = String(sessErr)
@@ -280,7 +321,7 @@ function App(): React.JSX.Element {
         setBusy(false)
       }
     },
-    [busy, openWorkspaceId, closeAllAttachments, reloadWorkspaces]
+    [busy, openWorkspaceId, closeAllAttachments, reloadWorkspaces, applyHookStatus]
   )
 
   // M3.6 C — 부팅 직후 window:getBootstrap 조회. workspaceId가 있으면(= 이 윈도우가 특정
@@ -321,6 +362,7 @@ function App(): React.JSX.Element {
       try {
         if (openWorkspaceId === w.workspaceId) {
           setAttachments(new Map())
+          setHookDisabledMap(new Map())
           setOpenWorkspaceId(null)
           setOpenSessionId(null)
           setOpenWorkspace(null)
@@ -362,6 +404,7 @@ function App(): React.JSX.Element {
           next.set(activated.session.sessionId, activated.pty)
           return next
         })
+        applyHookStatus(activated.session.sessionId, activated.hookDisabledReason)
         setOpenSessionId(activated.session.sessionId)
         setOpenWorkspace(activated.workspace)
         void reloadWorkspaces()
@@ -371,7 +414,7 @@ function App(): React.JSX.Element {
         setBusy(false)
       }
     },
-    [openWorkspaceId, busy, reloadWorkspaces]
+    [openWorkspaceId, busy, reloadWorkspaces, applyHookStatus]
   )
 
   // 좌 사이드바의 워크스페이스 row + 버튼 — 어떤 워크스페이스에든 새 세션 추가.
@@ -400,6 +443,7 @@ function App(): React.JSX.Element {
                 sessionId: s.sessionId
               })
               nextAttachments.set(activated.session.sessionId, activated.pty)
+              applyHookStatus(activated.session.sessionId, activated.hookDisabledReason)
             } catch (sessErr) {
               const msg = String(sessErr)
               if (msg.includes('ORPHAN_SESSION') || msg.includes('영속화하지 않습니다')) {
@@ -420,6 +464,7 @@ function App(): React.JSX.Element {
         )
         nextAttachments.set(created.session.sessionId, created.pty)
         setAttachments(nextAttachments)
+        applyHookStatus(created.session.sessionId, created.hookDisabledReason)
         setOpenWorkspaceId(w.workspaceId)
         setOpenSessionId(created.session.sessionId)
         setOpenWorkspace(created.workspace)
@@ -430,7 +475,7 @@ function App(): React.JSX.Element {
         setBusy(false)
       }
     },
-    [busy, openWorkspaceId, attachments, closeAllAttachments, reloadWorkspaces]
+    [busy, openWorkspaceId, attachments, closeAllAttachments, reloadWorkspaces, applyHookStatus]
   )
 
   const handleSelectTab = useCallback(
@@ -458,6 +503,7 @@ function App(): React.JSX.Element {
           next.set(activated.session.sessionId, activated.pty)
           return next
         })
+        applyHookStatus(activated.session.sessionId, activated.hookDisabledReason)
         setOpenSessionId(sessionId)
         setOpenWorkspace(activated.workspace)
         void reloadWorkspaces()
@@ -467,7 +513,7 @@ function App(): React.JSX.Element {
         setBusy(false)
       }
     },
-    [attachments, openSessionId, openWorkspaceId, busy, reloadWorkspaces]
+    [attachments, openSessionId, openWorkspaceId, busy, reloadWorkspaces, applyHookStatus]
   )
 
   const handleRenameWorkspace = useCallback(
@@ -508,6 +554,7 @@ function App(): React.JSX.Element {
       // 자기 윈도우를 home 상태로 되돌림 — windowManager의 windowsByWorkspace 매핑 해제.
       await window.agentbridge.window.releaseWorkspace()
       setAttachments(new Map())
+      setHookDisabledMap(new Map())
       setOpenWorkspaceId(null)
       setOpenSessionId(null)
       setOpenWorkspace(null)
@@ -532,6 +579,7 @@ function App(): React.JSX.Element {
         const newAttachments = new Map<string, CliSpawnInteractiveResult>()
         newAttachments.set(result.session.sessionId, result.pty)
         setAttachments(newAttachments)
+        applyHookStatus(result.session.sessionId, result.hookDisabledReason)
         setOpenWorkspaceId(result.workspace.workspaceId)
         setOpenSessionId(result.session.sessionId)
         setOpenWorkspace(result.workspace)
@@ -542,7 +590,7 @@ function App(): React.JSX.Element {
         setBusy(false)
       }
     },
-    [busy, closeAllAttachments, reloadWorkspaces]
+    [busy, closeAllAttachments, reloadWorkspaces, applyHookStatus]
   )
 
   // 세션 close — 호출 위치별 permanent 분기.
@@ -570,6 +618,7 @@ function App(): React.JSX.Element {
           next.delete(sessionId)
           return next
         })
+        applyHookStatus(sessionId, undefined)
         if (openSessionId === sessionId) {
           const remaining = Array.from(attachments.keys()).filter((sid) => sid !== sessionId)
           setOpenSessionId(remaining[0] ?? null)
@@ -583,7 +632,7 @@ function App(): React.JSX.Element {
         setBusy(false)
       }
     },
-    [openWorkspaceId, openSessionId, busy, attachments, reloadWorkspaces]
+    [openWorkspaceId, openSessionId, busy, attachments, reloadWorkspaces, applyHookStatus]
   )
 
   const handleDeleteSession = useCallback(
@@ -655,6 +704,7 @@ function App(): React.JSX.Element {
               onSelectTab={handleSelectTab}
               onCloseTab={(sid) => void handleSoftCloseTab(sid)}
               onAddTab={(model) => void handleAddTab(model)}
+              hookDisabledMap={hookDisabledMap}
             />
             <div className="xterm-host-stack">
               {Array.from(attachments.entries()).map(([sid, att]) => {

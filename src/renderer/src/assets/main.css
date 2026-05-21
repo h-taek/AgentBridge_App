@@ -707,8 +707,8 @@
 .ws-session-dot.model-codex {
   background: var(--model-codex);
 }
-.ws-session-dot.model-gemini {
-  background: var(--model-gemini);
+.ws-session-dot.model-agy {
+  background: var(--model-agy);
 }
 
 .ws-session-dot.closed {
@@ -1263,17 +1263,99 @@ details pre {
 
 .session-tabs-bar {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: stretch;
   gap: 2px;
   padding: 0;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  /* overflow:visible — dropdown(absolute)이 bar 영역 밖으로 펼쳐질 수 있어야 함. visible 탭이
+     bar 폭을 넘으면 measure가 visibleCount 조정 + hidden 처리. */
+  overflow: visible;
+  position: relative;
+}
+
+/* overflow ... 버튼 + dropdown */
+.session-tab-overflow-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+}
+
+.session-tab-overflow {
+  background: transparent;
+  border: none;
+  color: var(--color-text-secondary);
+  font-size: 14px;
+  padding: 0 10px;
+  height: 32px;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition:
+    background var(--t-fast),
+    color var(--t-fast);
+}
+
+.session-tab-overflow:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--color-text-primary);
+}
+
+.session-tab-overflow:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* overflow-menu — add-menu와 동일 스타일 (시각적 통일). portal로 body에 렌더되어 좌표는 inline style.
+   width는 콘텐츠(가장 긴 항목) 폭에 맞춤 — min-width 강제 없음. */
+.session-tab-overflow-menu {
+  background: rgba(20, 22, 28, 0.85);
+  backdrop-filter: blur(40px) saturate(180%);
+  -webkit-backdrop-filter: blur(40px) saturate(180%);
+  border-radius: var(--radius-md);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 12px 32px rgba(0, 0, 0, 0.45);
+  width: max-content;
+  max-height: 360px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  z-index: 50;
+}
+
+.session-tab-overflow-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  background: transparent;
+  border: none;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  font-size: 12px;
+  text-align: left;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.session-tab-overflow-item:hover:not(:disabled) {
+  background: var(--color-surface-2);
+}
+
+.session-tab-overflow-item:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 /* Subspace 스타일 탭 — flat. 활성 = 모델 색 underline. 호버 시만 close 노출 */
 .session-tab {
   display: inline-flex;
   align-items: center;
+  height: 32px;
+  line-height: 1;
   background: transparent;
   border: none;
   border-radius: 0;
@@ -1308,15 +1390,16 @@ details pre {
 .session-tab.model-codex.active::after {
   background: var(--model-codex);
 }
-.session-tab.model-gemini.active::after {
-  background: var(--model-gemini);
+.session-tab.model-agy.active::after {
+  background: var(--model-agy);
 }
 
 .session-tab-label {
   display: inline-flex;
   align-items: center;
+  height: 100%;
   gap: 7px;
-  padding: 9px 12px;
+  padding: 0 12px;
   background: transparent;
   color: var(--color-text-tertiary);
   border: none;
@@ -1393,8 +1476,8 @@ details pre {
 .session-tab-dot.model-codex {
   background: var(--model-codex);
 }
-.session-tab-dot.model-gemini {
-  background: var(--model-gemini);
+.session-tab-dot.model-agy {
+  background: var(--model-agy);
 }
 
 /* 내장 터미널(shell) 세션 — dot 대신 TerminalIcon. 탭 + 사이드바 + add 메뉴 공용. */
@@ -1417,6 +1500,16 @@ details pre {
 .session-tab.model-shell.active::after {
   background: var(--color-text-secondary);
 }
+/* hook 설치 실패로 IR 주입 비활성 상태 — 사용자에게 차별점 핵심 기능 비활성 명확히 표시. */
+.session-tab-hook-disabled {
+  margin-left: 6px;
+  font-size: 11px;
+  color: #f4a062;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  cursor: help;
+}
 
 .session-tab-add-wrap {
   position: relative;
@@ -1424,14 +1517,24 @@ details pre {
   align-items: stretch;
 }
 
+.session-tab-add-wrap {
+  flex-shrink: 0;
+}
+
 .session-tab-add {
   background: transparent;
   border: none;
   color: var(--color-text-tertiary);
-  padding: 9px 12px;
+  padding: 0 12px;
+  height: 32px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
   border-radius: 0;
   cursor: pointer;
   font-size: 12px;
+  white-space: nowrap;
+  flex-shrink: 0;
   transition:
     color var(--t-fast),
     background var(--t-fast);
@@ -1459,7 +1562,7 @@ details pre {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.18),
     0 12px 32px rgba(0, 0, 0, 0.45);
-  min-width: 150px;
+  width: max-content;
   display: flex;
   flex-direction: column;
   z-index: 50;
@@ -1656,8 +1759,8 @@ details pre {
   --mark-color: var(--model-codex);
   --mark-glow: rgba(93, 138, 249, 0.42);
 }
-.xterm-loading.model-gemini {
-  --mark-color: var(--model-gemini);
+.xterm-loading.model-agy {
+  --mark-color: var(--model-agy);
   --mark-glow: rgba(142, 108, 239, 0.42);
 }
 /* 내장 터미널 — 모델 색 없음. 무채색 halo. */
@@ -2247,6 +2350,67 @@ code {
 .settings-row-select:focus-visible {
   outline: none;
   box-shadow: var(--focus-ring);
+}
+
+/* settings-row의 column variant — 라벨/입력/list 세로 배치 (priority 우선순위 list 등). */
+.settings-row-column {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  padding: 12px 14px;
+}
+
+.settings-row-column .settings-row-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.settings-priority-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-left: 26px;
+}
+
+.settings-priority-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 12.5px;
+  color: var(--color-text-primary);
+}
+
+.settings-priority-label {
+  flex: 1;
+}
+
+.settings-priority-btn {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  color: var(--color-text-secondary);
+  width: 24px;
+  height: 24px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  transition: background var(--t-fast);
+}
+
+.settings-priority-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--color-text-primary);
+}
+
+.settings-priority-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
 }
 
 /* 정책 설명 — 라벨과 dropdown 사이 회색 텍스트 (데이터 위치 경로 표시와 동일 톤) */
@@ -3286,6 +3450,99 @@ code {
   color: var(--color-text-tertiary);
   line-height: 1.45;
   margin-top: 2px;
+}
+
+/* 세 CLI quota 가로 나열 — 부모 카드 위에 직접 배치 (별도 박스/배경 없음).
+   활성 CLI: dot + 이름 + % + severity 배지. 비활성: dot + % 만. */
+.mem-quota-row {
+  display: flex;
+  align-items: stretch;
+  padding: 4px 0 0;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+}
+
+.mem-quota-group {
+  display: inline-flex;
+  align-items: stretch;
+  min-width: 0;
+}
+
+.mem-quota-group:first-child {
+  flex: 1 1 auto;
+}
+
+.mem-quota-group:not(:first-child) {
+  flex: 0 0 auto;
+}
+
+/* 활성을 포함하는 그룹은 더 넓게 (이름 + 배지 수용). */
+.mem-quota-group:has(.is-active) {
+  flex: 2 1 auto;
+}
+
+.mem-quota-sep {
+  flex: 0 0 1px;
+  align-self: stretch;
+  margin: 2px 6px;
+  background: var(--color-border);
+}
+
+.mem-quota-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.mem-quota-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--mem-quota-dot, var(--color-text-tertiary));
+}
+
+.mem-quota-item.model-agy {
+  --mem-quota-dot: var(--model-agy);
+}
+.mem-quota-item.model-codex {
+  --mem-quota-dot: var(--model-codex);
+}
+.mem-quota-item.model-claude {
+  --mem-quota-dot: var(--model-claude);
+}
+
+.mem-quota-name {
+  color: var(--color-text-primary);
+  font-weight: 600;
+  font-size: 10.5px;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  flex: 0 1 auto;
+}
+
+.mem-quota-pct {
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.mem-quota-item:not(.is-active) .mem-quota-pct {
+  color: var(--color-text-secondary);
+}
+
+.mem-quota-item.is-active .mem-quota-pct {
+  margin-left: 1px;
+}
+
+.mem-quota-item.is-active .mem-badge {
+  margin-left: 1px;
+  font-size: 9.5px;
+  padding: 1px 6px;
 }
 
 /* ─── β Turn 흐름 카드 ───────────────────────────────────────────── */

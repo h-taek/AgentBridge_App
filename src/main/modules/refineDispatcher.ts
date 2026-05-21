@@ -1,53 +1,53 @@
 import log from 'electron-log/main'
 import type { CliKind } from '@shared/ipc'
+import { REFINE_DEFAULT_MODEL } from '@shared/ipc'
 import { getAdapter } from './cliAdapter'
 import { getCliPath } from './envProbe'
 import type { SpawnRefineResult } from './cliAdapter/types'
 import {
-  getQuotaSnapshot,
   looksLikeQuotaError,
   markForcedFallback,
-  type QuotaSnapshot
-} from './geminiQuotaTracker'
+  probeQuotaInBackground,
+  type CliQuotaSnapshot
+} from './cliQuotaTracker'
 import { loadSettings, type RefineModelPolicy } from './settings'
 
-// RefineDispatcher — M3 N 청크. architecture §14.7.
+// RefineDispatcher — 2026 재설계.
 //
-// refine LLM 선택 + 폴백 정책을 단일 모듈로 통합. ir:refine / handoff:prepare 호출자는
-// 어댑터를 직접 잡지 않고 dispatcher.runRefine()으로 위임.
+// 4단계 정책:
+//   priority : refinePriorityOrder list 순서대로 try. 각 단계에서 spawn 실패 또는 quota 에러면 다음 CLI.
+//   fixed    : refineFixedCli만 try. 실패 시 정제 스킵 (RefineFailedError).
+//   active   : 마지막 채팅 CLI(args.activeModel)만 try. 실패 시 정제 스킵.
+//   off      : RefineOffError throw.
 //
-// 정책 (B+C 결합):
-//   B = 가용성 폴백: gemini 미설치 / quota 초과 → 활성 모델로 자동 폴백
-//   C = 사용자 명시 override: settings.refineModel으로 강제 선택. 단 'gemini-flash' 명시 시에도
-//       가용성 미충족이면 폴백 (사용자 답답함보단 동작 우선)
+// 모델 선택 — CLI마다 자동:
+//   agy:    CLI flag로 지정 불가. modelHint=null. 사용자 default 따름.
+//   codex:  modelHint=REFINE_DEFAULT_MODEL.codex (gpt-5.4-mini)
+//   claude: modelHint=REFINE_DEFAULT_MODEL.claude (claude-haiku-4-5)
 //
-// auto 모드 결정 트리:
-//   1. settings.refineModel='off' → off 반환
-//   2. settings.refineModel='active' → activeModel 헤드리스
-//   3. settings.refineModel='gemini-flash' → gemini-flash 시도, 가용성 미충족 시 폴백
-//   4. settings.refineModel='auto' → gemini 가용 + quota OK면 gemini-flash, 아니면 activeModel
-//
-// quota 처리 (2026-05-11 재설계):
-//   - 카운터 증가 X — gemini 1 spawn = N requests일 수 있어 부정확. 진실의 원천은 gemini footer의 "% used"
-//   - 호출 전 getQuotaSnapshot() — usedPercent ≥ 95% 또는 forcedFallback이면 사전 폴백
-//   - 응답에 quota 키워드 검출 시 markForcedFallback (자정 UTC 자동 해제)
-//   - 폴백은 같은 호출 안에서 1회만
+// quota 추적 (Phase 2):
+//   응답 stderr/text의 quota 키워드 감지 (looksLikeQuotaError) — priority 정책에서 quota
+//   에러 시 markForcedFallback + 다음 CLI로 이동.
+//   spawn 성공/실패와 무관하게 refine 끝에 *실제 spawn된 CLI*만 background probe trigger
+//   (fire-and-forget) — 슬래시 명령으로 최신 % used 캡처.
 
 export type RefineModelChoice = {
-  // 실제 spawn된 어댑터 종류.
+  // 실제 spawn된 CLI 종류.
   spawnedModel: CliKind
   // refine 결과 + dispatcher 메타.
   result: SpawnRefineResult
-  // 사용자가 의도한 모델(settings.refineModel)이 가용성 미충족으로 다른 모델로 폴백됐는지.
+  // 우선순위 list 중 첫 후보가 실패해 다음 CLI로 넘어갔는지.
   fallback: boolean
-  fallbackReason?: 'gemini-unavailable' | 'gemini-quota' | 'user-policy'
+  fallbackReason?: 'unavailable' | 'quota' | 'spawn-error'
   policy: RefineModelPolicy
-  // gemini 시도 후 quota 정보(있을 때만).
-  quotaAfter?: QuotaSnapshot
+  // 우선순위 정책에서 시도한 CLI 순서 (실패 추적용).
+  triedCli: CliKind[]
+  // spawn된 CLI의 quota snapshot (probe 완료 시).
+  quotaAfter?: CliQuotaSnapshot
 }
 
 export type RefineDispatchArgs = {
-  // 활성 모델 — 'auto' / 'active' 정책 시 폴백 후보로 사용.
+  // 활성 모델 — 'active' 정책 시 단일 후보로 사용.
   activeModel: CliKind
   prompt: string
   cwd?: string
@@ -55,7 +55,6 @@ export type RefineDispatchArgs = {
   timeoutMs?: number
 }
 
-// off 모드 — refine 안 함. 호출자는 empty IR로 처리.
 export class RefineOffError extends Error {
   constructor() {
     super("refine 비활성 (settings.refineModel='off')")
@@ -63,19 +62,58 @@ export class RefineOffError extends Error {
   }
 }
 
-async function runWith(model: CliKind, args: RefineDispatchArgs): Promise<SpawnRefineResult> {
-  const adapter = getAdapter(model)
+export class RefineFailedError extends Error {
+  constructor(
+    public readonly cli: CliKind,
+    public readonly cause: unknown
+  ) {
+    super(`refine 실패 (${cli}): ${String(cause)}`)
+    this.name = 'RefineFailedError'
+  }
+}
+
+function isQuotaFailure(result: SpawnRefineResult): boolean {
+  return looksLikeQuotaError(result.stderr, result.assistantText, result.exitCode)
+}
+
+async function runWith(cli: CliKind, args: RefineDispatchArgs): Promise<SpawnRefineResult> {
+  const adapter = getAdapter(cli)
   return adapter.spawnRefineIR({
     prompt: args.prompt,
     cwd: args.cwd,
     abortSignal: args.abortSignal,
-    timeoutMs: args.timeoutMs
+    timeoutMs: args.timeoutMs,
+    modelHint: REFINE_DEFAULT_MODEL[cli]
   })
 }
 
-// gemini 시도가 성공이라고 판정 가능한 조건: assistant 본문 받음 + quota 에러 아님.
-function isQuotaFailure(result: SpawnRefineResult): boolean {
-  return looksLikeQuotaError(result.stderr, result.assistantText, result.exitCode)
+// CLI 1개로 정제 시도. 결과 + quota 에러 여부 반환. spawn 실패는 throw.
+type SingleAttempt = {
+  ok: boolean
+  result: SpawnRefineResult
+  quotaError: boolean
+}
+
+async function tryOne(cli: CliKind, args: RefineDispatchArgs): Promise<SingleAttempt> {
+  const cliPath = getCliPath(cli)
+  if (!cliPath) {
+    throw new Error(`${cli} CLI not found in PATH`)
+  }
+  const result = await runWith(cli, args)
+  const quotaError = isQuotaFailure(result)
+  return {
+    ok: !quotaError && result.exitCode === 0 && result.assistantText.length > 0,
+    result,
+    quotaError
+  }
+}
+
+// refine 직후 *실제 spawn된 CLI*만 background probe — fire-and-forget. 결과는 quota:updated
+// broadcast로 UI 동기화. probe 실패는 무시(다음 refine에서 재시도).
+function triggerProbeAsync(cli: CliKind): void {
+  void probeQuotaInBackground(cli).catch((err) => {
+    log.warn('RefineDispatcher — quota probe 실패, 무시', { cli, err: String(err) })
+  })
 }
 
 export async function runRefine(args: RefineDispatchArgs): Promise<RefineModelChoice> {
@@ -86,104 +124,84 @@ export async function runRefine(args: RefineDispatchArgs): Promise<RefineModelCh
     throw new RefineOffError()
   }
 
-  if (policy === 'active') {
-    log.info('RefineDispatcher — active 정책', { activeModel: args.activeModel })
-    const result = await runWith(args.activeModel, args)
-    return { spawnedModel: args.activeModel, result, fallback: false, policy }
-  }
-
-  // 이하 'auto' / 'gemini-flash' — gemini 우선, 가용성 폴백 가능.
-  const wantGemini = policy === 'auto' || policy === 'gemini-flash'
-  if (!wantGemini) {
-    // unreachable — TS exhaustiveness
-    const result = await runWith(args.activeModel, args)
-    return { spawnedModel: args.activeModel, result, fallback: false, policy }
-  }
-
-  const geminiAvailable = !!getCliPath('gemini')
-  if (!geminiAvailable) {
-    log.info('RefineDispatcher — gemini 미설치 폴백', {
-      policy,
-      fallbackTo: args.activeModel
-    })
-    const result = await runWith(args.activeModel, args)
-    return {
-      spawnedModel: args.activeModel,
-      result,
-      fallback: true,
-      fallbackReason: 'gemini-unavailable',
-      policy
+  // 단일 후보 정책 (fixed / active) — 실패 시 fallback 없음, 그대로 throw.
+  if (policy === 'fixed' || policy === 'active') {
+    const cli = policy === 'fixed' ? settings.refineFixedCli : args.activeModel
+    log.info(`RefineDispatcher — ${policy} 정책`, { cli })
+    try {
+      const attempt = await tryOne(cli, args)
+      if (attempt.quotaError) {
+        await markForcedFallback(cli)
+        log.warn('RefineDispatcher — quota 에러 (단일 후보 — fallback 없음)', { cli })
+      }
+      triggerProbeAsync(cli)
+      return {
+        spawnedModel: cli,
+        result: attempt.result,
+        fallback: false,
+        policy,
+        triedCli: [cli]
+      }
+    } catch (err) {
+      log.warn(`RefineDispatcher — ${policy} spawn 실패`, { cli, err: String(err) })
+      throw new RefineFailedError(cli, err)
     }
   }
 
-  const quotaBefore = await getQuotaSnapshot()
-  if (quotaBefore.shouldFallback) {
-    log.info('RefineDispatcher — gemini quota 한도 폴백 (spawn 전)', {
-      policy,
-      severity: quotaBefore.severity,
-      usedPercent: quotaBefore.usedPercent,
-      forcedFallback: quotaBefore.forcedFallback,
-      fallbackTo: args.activeModel
-    })
-    const result = await runWith(args.activeModel, args)
-    return {
-      spawnedModel: args.activeModel,
-      result,
-      fallback: true,
-      fallbackReason: 'gemini-quota',
-      policy,
-      quotaAfter: quotaBefore
+  // priority 정책 — order 순서대로 try. 실패/quota 에러면 다음.
+  const order =
+    settings.refinePriorityOrder && settings.refinePriorityOrder.length > 0
+      ? settings.refinePriorityOrder
+      : (['agy', 'codex', 'claude'] as CliKind[])
+  log.info('RefineDispatcher — priority 정책', { order })
+
+  const tried: CliKind[] = []
+  let lastError: unknown = null
+  for (let i = 0; i < order.length; i++) {
+    const cli = order[i]
+    tried.push(cli)
+    const cliPath = getCliPath(cli)
+    if (!cliPath) {
+      log.info('RefineDispatcher — CLI 미설치, next', { cli, remaining: order.length - i - 1 })
+      lastError = new Error(`${cli} CLI not found`)
+      continue
+    }
+    try {
+      const attempt = await tryOne(cli, args)
+      if (attempt.ok) {
+        triggerProbeAsync(cli)
+        return {
+          spawnedModel: cli,
+          result: attempt.result,
+          fallback: tried.length > 1,
+          fallbackReason: tried.length > 1 ? 'spawn-error' : undefined,
+          policy,
+          triedCli: tried
+        }
+      }
+      if (attempt.quotaError) {
+        await markForcedFallback(cli)
+        log.warn('RefineDispatcher — priority quota 에러, next', {
+          cli,
+          exitCode: attempt.result.exitCode
+        })
+        lastError = new Error(`${cli} quota error`)
+        continue
+      }
+      // 빈 응답 또는 exitCode != 0 — assistantText 없음. fallback.
+      log.warn('RefineDispatcher — priority 빈/실패 응답, next', {
+        cli,
+        exitCode: attempt.result.exitCode,
+        bodyLen: attempt.result.assistantText.length
+      })
+      lastError = new Error(`${cli} empty/failed response`)
+    } catch (err) {
+      log.warn('RefineDispatcher — priority spawn 실패, next', { cli, err: String(err) })
+      lastError = err
     }
   }
 
-  // gemini 시도 — 카운터 증가 X (footer 캡처가 진실의 원천). 응답 후 quota 에러 감지로만 사후 폴백.
-  log.info('RefineDispatcher — gemini-flash 시도', {
-    policy,
-    usedPercent: quotaBefore.usedPercent,
-    severity: quotaBefore.severity
-  })
-  let geminiResult: SpawnRefineResult
-  try {
-    geminiResult = await runWith('gemini', args)
-  } catch (err) {
-    // spawn 자체 실패 (CLI 누락 등) — active 폴백
-    log.warn('RefineDispatcher — gemini spawn 실패 폴백', {
-      err: String(err),
-      fallbackTo: args.activeModel
-    })
-    const result = await runWith(args.activeModel, args)
-    return {
-      spawnedModel: args.activeModel,
-      result,
-      fallback: true,
-      fallbackReason: 'gemini-unavailable',
-      policy,
-      quotaAfter: quotaBefore
-    }
-  }
-
-  if (isQuotaFailure(geminiResult)) {
-    // gemini 응답에 quota 키워드 검출 — 강제 폴백 마킹 + active 폴백.
-    const afterMark = await markForcedFallback()
-    log.warn('RefineDispatcher — gemini 응답 quota 에러 → active 폴백', {
-      stderrSlice: geminiResult.stderr.slice(0, 200)
-    })
-    const result = await runWith(args.activeModel, args)
-    return {
-      spawnedModel: args.activeModel,
-      result,
-      fallback: true,
-      fallbackReason: 'gemini-quota',
-      policy,
-      quotaAfter: afterMark
-    }
-  }
-
-  return {
-    spawnedModel: 'gemini',
-    result: geminiResult,
-    fallback: false,
-    policy,
-    quotaAfter: quotaBefore
-  }
+  // 모든 후보 실패.
+  log.warn('RefineDispatcher — priority 전체 실패', { tried })
+  throw new RefineFailedError(tried[tried.length - 1], lastError)
 }

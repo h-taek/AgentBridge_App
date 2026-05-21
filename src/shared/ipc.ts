@@ -16,7 +16,9 @@ export type AppHealth = {
   cwd: string
 }
 
-export type CliKind = 'claude' | 'codex' | 'gemini'
+// 'agy' = Antigravity CLI (구 Gemini CLI). 2026년 리브랜드 — 기존 'gemini' 값은 workspaceStore /
+// settings 로드 시 자동 마이그레이션.
+export type CliKind = 'claude' | 'codex' | 'agy'
 
 export type CliPresence = {
   kind: CliKind
@@ -160,6 +162,9 @@ export type SessionMeta = {
   // 'shell'이면 일반 터미널 세션 — 어댑터 / hook / TurnRecorder / IR refine 전부 bypass.
   // 미지정/누락 시 'cli'로 간주 (기존 디스크 데이터 호환).
   kind?: SessionKind
+  // 가장 최근 채팅(turn 완료) 시점. SessionTabs 정렬에 사용 — 최근 채팅 세션을 좌측 끝으로.
+  // turn flush 시 turnRecorder가 갱신. 채팅 안 한 세션은 undefined.
+  lastChattedAt?: string
 }
 
 export type WorkspaceMeta = {
@@ -260,6 +265,10 @@ export type SessionActivateResult = {
   pty: CliSpawnInteractiveResult
   // 기존 replay.log 스냅샷 (xterm.js 화면 복원용). create 시엔 빈 문자열.
   replay: string
+  // Hook 설치 실패로 IR 주입(매 메시지 IR 컨텍스트 inject) 비활성 상태일 때 reason 포함.
+  // shell 세션은 hook 무관이라 항상 undefined. cli 세션이면 정상 설치 시에도 undefined.
+  // UI는 이 값이 있으면 "메모리 비활성" 배지 표시.
+  hookDisabledReason?: string
 }
 
 // L1 — codex처럼 modelSessionId가 spawn 후 비동기 캡처되는 경우 발사. workspace + session 단위.
@@ -295,6 +304,8 @@ export type HomeSubmitResult = {
   workspace: WorkspaceMeta
   session: SessionMeta
   pty: CliSpawnInteractiveResult
+  // SessionActivateResult와 동일 의미 — hook 설치 실패 시 reason. UI는 "메모리 비활성" 배지 표시.
+  hookDisabledReason?: string
 }
 
 // ─── M3 M 청크 — Hook trust 상태 ──────────────────────────────────────────
@@ -370,6 +381,8 @@ export type TurnsSummaryResult = {
 
 // instructions:list — cwd 안 AI 영구 지시사항 파일 (AGENTS.md / CLAUDE.md / GEMINI.md).
 // 워크스페이스 cwd 확보 후 stat. 존재 여부 + mtime + size.
+// 'gemini' tag는 legacy 잔존 — agy CLI는 ~/.gemini/ base를 공유하므로 GEMINI.md 파일 자체는
+// 그대로 유지(agy가 읽는지는 사용자 검증). 이름만 'gemini' 유지해 데이터 호환 보장.
 export type InstructionFileKind = 'agents' | 'claude' | 'gemini'
 
 export type InstructionFileInfo = {
@@ -496,15 +509,21 @@ export type AttachFilesResult = {
   error?: string
 }
 
-// ─── M3 N 청크 — Settings + Gemini quota ────────────────────────────────
-// architecture §14.7. refine LLM 선택 + gemini-flash 무료 티어 quota 추적.
-
-// refine LLM 선택 정책:
-//   auto         : gemini 가용 + quota OK면 gemini-flash, 아니면 active 폴백 (기본값)
-//   gemini-flash : 명시 강제. 가용성 미충족 시에도 폴백 동작
-//   active       : 항상 활성 모델 헤드리스 (refine 비용 사용자 부담)
-//   off          : refine 안 함 — hook은 빈 컨텍스트만 inject
-export type RefineModelPolicy = 'auto' | 'gemini-flash' | 'active' | 'off'
+// ─── Refine 정책 (M3 N → 2026 재설계) ────────────────────────────────────
+// 4단계 정책:
+//   priority : CLI 우선순위 list로 시도. 실패/quota 초과 시 다음 CLI로 fallback (기본값)
+//   fixed    : 단일 CLI 고정. 실패 시 정제 스킵 (fallback 없음)
+//   active   : 마지막 채팅 CLI. 실패 시 정제 스킵
+//   off      : 정제 안 함 — hook은 빈 컨텍스트만 inject
+//
+// 모델 선택:
+//   - agy: CLI flag로 지정 불가. 사용자 default 따름 (interactive에서 변경한 게 영구 적용)
+//   - codex: `-c model="<id>"` 형식. cheap default: gpt-5.4-mini
+//   - claude: `--model <id>` 형식. cheap default: claude-haiku-4-5
+//
+// legacy 값 마이그레이션 (settings 로드 시):
+//   auto / agy-flash → priority
+export type RefineModelPolicy = 'priority' | 'fixed' | 'active' | 'off'
 
 // UI 외관 — 현재 다크만 잠금. 라이트/시스템은 정식 배포 후 활성화 예정 — 토글 UI는 disabled.
 export type ThemeMode = 'dark' | 'light' | 'system'
@@ -512,8 +531,18 @@ export type ThemeMode = 'dark' | 'light' | 'system'
 // 언어 — 현재 한글만 잠금. 영어는 i18n 도입 후 활성화 예정 — 토글 UI는 disabled.
 export type LanguageCode = 'ko' | 'en'
 
+// turns.jsonl의 assistant body 보존 정도. settings에서 사용자가 선택. 3단계.
+//   full    : 원문에 가깝게 보존 (~50KB까지). 디스크 사용량 큼. 디버깅/리뷰 용도.
+//   compact : 핵심만 추출 (~500자). 균형 잡힌 기본값.
+//   minimal : 최소 요약 (~200자). 가벼움. 디테일 손실.
+export type TurnsAssistantDetail = 'full' | 'compact' | 'minimal'
+
 export type AppSettings = {
   refineModel: RefineModelPolicy
+  // priority 정책 시 CLI 우선순위 (앞에서부터 시도). 기본: ['agy', 'codex', 'claude']
+  refinePriorityOrder: CliKind[]
+  // fixed 정책 시 사용할 단일 CLI. 기본: 'agy'
+  refineFixedCli: CliKind
   // 다크/라이트/시스템 — 현재 'dark'로 잠금.
   theme: ThemeMode
   // 표시 언어 — 현재 'ko'로 잠금.
@@ -521,10 +550,23 @@ export type AppSettings = {
   // 홈 화면 새 워크스페이스 생성 시 사용할 베이스 경로. 비어있으면 main 프로세스가
   // `${homedir}/AgentBridge`를 fallback으로 사용. 사용자가 수정 가능.
   defaultBasePath: string
+  // turns.jsonl 안 assistantBody 보존 정도. sliceAssistant의 cap 단계 결정.
+  turnsAssistantDetail: TurnsAssistantDetail
 }
 
-// quota severity (2026-05-11 재설계 — gemini PTY footer "% used" 기반):
-//   unknown  : gemini 탭을 한 번도 안 열음 — UI에 안내만
+// 각 CLI의 정제용 default model. cheap 모델 (토큰 소모량 최소) 기준.
+//   agy:    CLI flag로 모델 지정 불가 — 사용자 default 따름. null 표기.
+//   codex:  `-c model="gpt-5.4-mini"` (OpenAI mini variant)
+//   claude: `--model "claude-haiku-4-5"` (Haiku — Opus 대비 약 1/20 비용)
+// 사용자가 수정 가능 (UI에서 외부화 예정. 현재는 hardcoded default).
+export const REFINE_DEFAULT_MODEL: Record<CliKind, string | null> = {
+  agy: null,
+  codex: 'gpt-5.4-mini',
+  claude: 'claude-haiku-4-5'
+}
+
+// quota severity (Phase 2 — per-CLI 슬래시 명령 응답 기반):
+//   unknown  : 한 번도 캡처 못 함 — UI에 안내만
 //   ok       : <80%
 //   warn     : 80~94%
 //   critical : 95~99%
@@ -532,7 +574,7 @@ export type AppSettings = {
 export type QuotaSeverity = 'unknown' | 'ok' | 'warn' | 'critical' | 'exceeded'
 
 export type QuotaSnapshot = {
-  // gemini 인터랙티브 footer에서 마지막 캡처한 사용률(%). null이면 한 번도 못 봄.
+  // 슬래시 명령 응답에서 마지막 캡처한 사용률(%). null이면 한 번도 못 봄.
   usedPercent: number | null
   // 마지막 캡처 시각 (ISO 8601). null이면 한 번도 못 봄.
   lastSeenAt: string | null
@@ -542,10 +584,24 @@ export type QuotaSnapshot = {
   forcedFallback: boolean
 }
 
-// quota:probe 결과 — background gemini PTY spawn + footer 캡처 + SIGTERM.
-// UI "지금 확인" 버튼 / workspaces:open / ir:refine 후 자동 trigger 등에서 사용.
+// quota:get 결과 — 세 CLI snapshot 일괄.
+export type QuotaSnapshotsByCli = Record<CliKind, QuotaSnapshot>
+
+// quota:updated broadcast 페이로드 — CLI별로 변경 발사.
+export type QuotaUpdatedEvent = {
+  cli: CliKind
+  snapshot: QuotaSnapshot
+}
+
+// quota:probe 요청 — 어느 CLI를 probe할지.
+export type QuotaProbeRequest = {
+  cli: CliKind
+}
+
+// quota:probe 결과 — background CLI PTY spawn + 슬래시 명령 응답 캡처 + cleanup.
 export type QuotaProbeResult = {
   ok: boolean
+  cli: CliKind
   // 캡처된 최신 snapshot (ok=false면 기존 영속 값 그대로).
   snapshot: QuotaSnapshot
   // 진단용 — timeout / pty-exited / spawn-failed 등.
@@ -628,6 +684,9 @@ export const IpcChannel = {
   // ─── M3 N 청크 — settings + gemini quota ───
   SettingsGet: 'settings:get',
   SettingsSet: 'settings:set',
+  // saveSettings 직후 main → renderer 전역 broadcast. 여러 패널/윈도우가 같은 settings를 표시할 때
+  // 한쪽 변경이 다른 쪽에 즉시 반영되도록.
+  SettingsUpdated: 'settings:updated',
   QuotaGet: 'quota:get',
   // gemini PTY background spawn으로 footer "% used" 캡처. 사용자 명시 + 자동 trigger 양쪽 사용.
   QuotaProbe: 'quota:probe',

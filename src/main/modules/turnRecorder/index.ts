@@ -7,6 +7,8 @@ import { appendTurn, rotateIfNeeded } from '../turnsStore'
 import { sendToWorkspaceWindow } from '../windowManager'
 import { sliceAssistant } from './sliceAssistant'
 import { checkAndRunCompaction } from '../compactionScheduler'
+import { loadSettings } from '../settings'
+import { updateSessionMeta } from '../workspaceStore'
 
 // M3.6 C — workspaceId 매칭 윈도우에만 전송. 다른 워크스페이스 윈도우엔 의미 없음.
 export function broadcastTurnsUpdated(workspaceId: string): void {
@@ -285,7 +287,13 @@ async function flushTurn(r: RecorderState): Promise<void> {
     r.idleTimer = null
   }
 
-  const slice = sliceAssistant({ raw: assistantRaw, model })
+  // 사용자 설정 turnsAssistantDetail에 따라 assistantBody cap 크기 분기 (full/compact/minimal).
+  const settings = await loadSettings()
+  const slice = sliceAssistant({
+    raw: assistantRaw,
+    model,
+    detail: settings.turnsAssistantDetail
+  })
   const turn: TurnRecord = {
     id: randomUUID(),
     workspaceId,
@@ -310,6 +318,19 @@ async function flushTurn(r: RecorderState): Promise<void> {
       assistantBodyBytes: turn.assistantBodyBytes,
       toolCalls: turn.toolCalls.length
     })
+    // 세션 lastChattedAt + workspace updatedAt 동시 갱신 (UI 정렬 즉시 반영용).
+    // updateSessionMeta가 workspace.json도 atomic write — touchWorkspace의 5초 throttle 우회.
+    try {
+      await updateSessionMeta(workspaceId, sessionId, {
+        lastChattedAt: turn.completedAt
+      })
+    } catch (err) {
+      log.warn('TurnRecorder lastChattedAt 갱신 실패 (non-fatal)', {
+        workspaceId,
+        sessionId,
+        err: String(err)
+      })
+    }
     broadcastTurnsUpdated(workspaceId)
   } catch (err) {
     log.warn('TurnRecorder appendTurn 실패', {

@@ -48,14 +48,8 @@ import {
   updateWorkspaceMeta
 } from '../modules/workspaceStore'
 import { installHooksForSession } from '../modules/hookInstaller'
-import { probeQuotaIfStale } from '../modules/geminiQuotaTracker'
 import { onAssistantData, registerRecorder, unregisterRecorder } from '../modules/turnRecorder'
 import { registerDisplayFilter, unregisterDisplayFilter } from '../modules/ptyDisplayFilter'
-
-// 자동 quota probe — 워크스페이스 열기 직후 fire-and-forget.
-// 마지막 캡처가 10분 이내면 skip (probeQuotaIfStale 내부 throttle).
-// gemini PTY ~5초 점유라 사용자 체감 X (background) + 너무 잦은 spawn 방지.
-const QUOTA_PROBE_STALE_MS = 10 * 60 * 1000
 import { ensureConversationDirs } from '../modules/conversationStore'
 import {
   clearActiveSession,
@@ -104,10 +98,9 @@ async function handleWorkspacesCreate(
 
 async function handleWorkspacesOpen(_e: unknown, workspaceId: string): Promise<WorkspaceMeta> {
   // L1: 메타만 반환. UI는 sessions:open으로 개별 탭 활성화.
-  // N(Fix 4): 자동 quota probe trigger — stale(10분 초과)이면 background spawn으로 footer 캡처.
-  void probeQuotaIfStale(QUOTA_PROBE_STALE_MS).catch((err) => {
-    log.warn('quota probe (workspaces:open trigger) 실패 — 무시', { err: String(err) })
-  })
+  // Phase 2: quota probe는 더 이상 workspaces:open에서 trigger하지 않음.
+  // refine이 실행될 때 RefineDispatcher가 *해당 CLI*만 probe하며, 사용자는 RefineSettingsPanel에서
+  // 명시 trigger로 임의 CLI를 즉시 probe 가능.
   return loadWorkspace(workspaceId)
 }
 
@@ -294,28 +287,23 @@ async function handleSessionsClose(_e: unknown, req: SessionCloseRequest): Promi
   }
 
   // hard delete 사유:
-  //   cli   — permanent=true(사용자 명시) OR 어댑터가 native 세션 없다고 판정(빈 세션 자동 정리)
-  //   shell — permanent=true만. shell은 native 흔적 자체가 없어 "빈 세션 자동 정리" 규칙이 무의미하고,
-  //           사용자가 의도적으로 탭을 X(soft close)했을 때 다시 열 수 있어야 한다.
+  //   - permanent=true (사용자 명시 hard delete — 사이드바 휴지통)만 hard delete.
+  //
+  // 정책 변경 (2026-05-21): "빈 세션 자동 정리" 흐름 폐기.
+  // 이유:
+  //   (1) 사용자가 탭 X 또는 워크스페이스 닫기로 닫은 세션은 "다시 열고 싶을 수도 있는" 상태 —
+  //       다음 reopen 시 soft close에서 복원되어야 함.
+  //   (2) modelSessionId 캡처가 spawn 후 비동기(agy 등)인 경우, 캡처 전에 닫히면 항상
+  //       modelSessionId=null → hasNativeSession=false → hard delete로 잘못 삭제되는 race 다발.
+  //   (3) 빈 세션 disk 잔재가 누적되더라도 사용자가 사이드바 휴지통으로 명시 정리 가능.
+  //       자동 판정의 부정확성보다 명시성이 우선.
   const isShell = session ? (session.kind ?? 'cli') === 'shell' : false
-
-  let hasNative = false
-  if (session && !isShell) {
-    try {
-      hasNative = await getAdapter(session.model).hasNativeSession(
-        session.modelSessionId,
-        workspacePath
-      )
-    } catch {
-      /* 디스크 access 실패 시 보수적으로 hasNative=false → hard delete */
-    }
-  }
-  const shouldHardDelete = isShell ? req.permanent === true : req.permanent === true || !hasNative
+  const shouldHardDelete = req.permanent === true
   if (shouldHardDelete) {
     log.info('sessions:close — hard delete', {
       workspaceId: req.workspaceId,
       sessionId: req.sessionId,
-      reason: req.permanent ? 'user-permanent' : 'no-native-session'
+      reason: 'user-permanent'
     })
     // 어댑터 native 파일 먼저 삭제(외부 agent 노출 차단). shell은 skip — 흔적 없음.
     if (!isShell && session?.modelSessionId) {
@@ -396,8 +384,10 @@ async function spawnAndAttachSession(
 
   // M3 M 청크 — hook config install. spawn 직전에 매번 install해 helper binary 경로 변경
   // (dev/prod 전환, electron 재빌드 등)에도 항상 최신 경로 반영. 마커 블록 merge라 사용자 콘텐츠 보존.
-  // 실패는 throw — hook 없이 spawn하면 inject 0이라 차별점 핵심(매 메시지 IR 주입) 동작 안 함.
+  // 실패 시: spawn은 진행하되 hookDisabledReason을 결과에 포함해 UI가 "메모리 비활성" 배지 표시.
+  // (이전엔 silent로 IR 주입 비활성 상태가 됐는데 사용자가 핵심 기능 동작 중이라 오해할 위험.)
   let claudeSettingsPath: string | undefined
+  let hookDisabledReason: string | undefined
   try {
     const hooks = await installHooksForSession({
       model: session.model,
@@ -412,11 +402,12 @@ async function spawnAndAttachSession(
       await updateWorkspaceMeta(workspaceId, { codexHookTrust: 'pending' })
     }
   } catch (err) {
-    log.error('HookInstaller 실패 — hook 없이 spawn 진행', {
+    hookDisabledReason = String(err)
+    log.error('HookInstaller 실패 — IR 주입 비활성 상태로 spawn (UI에 배지 표시)', {
       workspaceId,
       sessionId: session.sessionId,
       model: session.model,
-      err: String(err)
+      err: hookDisabledReason
     })
   }
 
@@ -513,7 +504,8 @@ async function spawnAndAttachSession(
     workspace: updatedWs,
     session: updatedSession,
     pty,
-    replay
+    replay,
+    hookDisabledReason
   }
 }
 
@@ -657,7 +649,6 @@ async function handleHomeSubmit(
   let folderName = stem
   let suffix = 1
   // 동일 초에 두 개 생성되는 충돌만 방어 (보통 2번 안 돈다)
-  // eslint-disable-next-line no-constant-condition
   while (true) {
     const candidate = path.join(baseDir, folderName)
     try {
@@ -713,7 +704,8 @@ async function handleHomeSubmit(
   return {
     workspace: activated.workspace,
     session: activated.session,
-    pty: activated.pty
+    pty: activated.pty,
+    hookDisabledReason: activated.hookDisabledReason
   }
 }
 

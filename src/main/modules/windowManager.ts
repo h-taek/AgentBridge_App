@@ -66,8 +66,10 @@ function buildBrowserWindow(): BrowserWindow {
   return new BrowserWindow({
     width: 1180,
     height: 760,
-    minWidth: 820,
-    minHeight: 520,
+    // 최소 — MacBook 14인치 logical 해상도(1512×982)의 1/3. 좁은 화면에서는 AppShell이
+    // 양 사이드바를 자동 접어 본문 영역만 보이도록 함.
+    minWidth: 504,
+    minHeight: 327,
     show: false,
     autoHideMenuBar: true,
     title: 'AgentBridge',

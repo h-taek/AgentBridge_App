@@ -2,17 +2,17 @@
 /*
  * agentbridge-memory — hook 호출 시 ir.json을 markdown으로 렌더해 stdout JSON 출력.
  *
- * M3 M 청크 — architecture §14.8/§14.9. claude/codex/gemini 세 CLI의 hook 시스템이 호출하는
- * 헬퍼 binary. Hook command가 stdout으로 다음 JSON을 받으면 CLI host가 additionalContext를
- * 모델 prompt에 prepend한다.
+ * M3 M 청크 — architecture §14.8/§14.9. claude/codex/agy(Antigravity) 세 CLI의 hook 시스템이
+ * 호출하는 헬퍼 binary. CLI host에 따라 출력 protocol이 다르다:
  *
- *   { hookSpecificOutput: { hookEventName, additionalContext }, suppressOutput: true }
+ *   claude/codex: `{ hookSpecificOutput: { hookEventName, additionalContext }, suppressOutput: true }`
+ *   agy:          (agy 1.0.0 — 검증 필요) 동일 protocol 가정. 미동작 시 라이브 테스트 후 갱신.
  *
  * Node CJS plain script — 빌드 X, ASAR unpack X. electron-builder `asarUnpack: resources/**`로
  * 패키지 안 .app/Contents/Resources/bin/agentbridge-memory.js로 들어간다 (M4 패키징 단계 검증).
  * dev에서는 <repo>/resources/bin/agentbridge-memory.js 그대로 실행.
  *
- * Hook command 형식: `node <abs-path> inject --agent <claude|codex|gemini> --workspace <id>`
+ * Hook command 형식: `node <abs-path> inject --agent <claude|codex|agy> --workspace <id>`
  *
  * 사용자 글로벌 데이터 위치: ~/Library/Application Support/AgentBridge/workspaces/<id>/ir.json
  * (Electron app.getPath('userData')와 동일 경로 — macOS 한정. M4 멀티 플랫폼 시 분기).
@@ -24,7 +24,7 @@ const fs = require('fs')
 const os = require('os')
 const path = require('path')
 
-// claude/codex/gemini 모두 stdout JSON의 `hookEventName`이 *호출된 hook event 이름과 정확히 일치*
+// claude/codex/agy 모두 stdout JSON의 `hookEventName`이 *호출된 hook event 이름과 정확히 일치*
 // 해야 한다. 일치 안 하면 CLI host가 "expected X but got Y" 에러로 hook을 거부 (claude는 warning,
 // codex는 fatal일 수 있음 — spawn 후 자발 종료 가능성).
 //
@@ -32,6 +32,9 @@ const path = require('path')
 // 박아 helper가 그 값을 그대로 emit하도록 한다.
 //
 // agent별 *허용 가능한 이벤트* 화이트리스트는 hookInstaller가 관리. helper는 받은 값을 그대로 emit.
+//
+// agy 추가 이벤트(PreInvocation/PostInvocation)는 매 모델 호출 직전·직후에 fire. SessionStart/
+// BeforeAgent 대신 agy는 PreInvocation으로 컨텍스트 inject. PostInvocation/Stop은 향후 활용.
 
 const ALLOWED_EVENTS = new Set([
   'SessionStart',
@@ -39,7 +42,9 @@ const ALLOWED_EVENTS = new Set([
   'BeforeAgent',
   'PreToolUse',
   'PostToolUse',
-  'Stop'
+  'Stop',
+  'PreInvocation',
+  'PostInvocation'
 ])
 
 function parseArgs(argv) {
@@ -294,8 +299,8 @@ function main() {
     )
     process.exit(2)
   }
-  if (parsed.agent !== 'claude' && parsed.agent !== 'codex' && parsed.agent !== 'gemini') {
-    process.stderr.write('agentbridge-memory: --agent must be claude|codex|gemini\n')
+  if (parsed.agent !== 'claude' && parsed.agent !== 'codex' && parsed.agent !== 'agy') {
+    process.stderr.write('agentbridge-memory: --agent must be claude|codex|agy\n')
     process.exit(2)
   }
   if (!parsed.workspace) {
@@ -316,18 +321,38 @@ function main() {
   // 최근 N개 raw turn — compaction keepRecent와 동일(현재 3). 사용자가 임계 변경 시 동기화 필요.
   const recentTurns = readRecentTurns(turnsPath, 3)
   const additionalContext = buildAdditionalContext(ir, recentTurns, parsed.workspace)
-  // hook protocol — stdout JSON. hookEventName은 *받은 값 그대로* emit. CLI host가
-  // "expected X but got Y" 에러를 피하려면 정확히 일치해야 한다.
+  // hook protocol — stdout JSON. agent마다 schema가 다르다 (CLI host의 hook output unmarshaller가 다르므로).
+  //
+  //   claude/codex: `{ hookSpecificOutput: { hookEventName, additionalContext }, suppressOutput: true }`
+  //   agy:          `{ injectSteps: [{ ephemeralMessage: { content: "..." } }] }` (protojson — agy 1.0.0)
+  //                 hooks_go_proto.HookInjectedStep_EphemeralMessage + CortexStepEphemeralMessage.content
+  //                 (binary string 검증: protobuf:"bytes,103,opt,name=ephemeral_message,...,oneof" /
+  //                  (*CortexStepEphemeralMessage).GetContent)
   process.stdout.write(
-    JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: parsed.event,
-        additionalContext
-      },
-      suppressOutput: true
-    })
+    JSON.stringify(buildHookOutput(parsed.agent, parsed.event, additionalContext))
   )
   process.exit(0)
+}
+
+function buildHookOutput(agent, event, additionalContext) {
+  if (agent === 'agy') {
+    // protojson: HookInjectedStep.ephemeral_message는 string field (object 아님).
+    // 라이브 검증: agy 1.0.0이 `invalid value for string field ephemeralMessage: {` 에러를 던짐.
+    // 같은 binary에 CortexStepEphemeralMessage.content가 있지만 그건 별개 컨텍스트의 동명 타입 —
+    // HookInjectedStep 안에서는 직접 string으로 받는다.
+    return {
+      injectSteps: [{ ephemeralMessage: additionalContext }]
+    }
+  }
+  // claude / codex — hookEventName은 *받은 값 그대로* emit. CLI host가 "expected X but got Y" 에러를
+  // 피하려면 정확히 일치해야 한다.
+  return {
+    hookSpecificOutput: {
+      hookEventName: event,
+      additionalContext
+    },
+    suppressOutput: true
+  }
 }
 
 try {
@@ -343,14 +368,16 @@ try {
   } catch {
     /* noop */
   }
-  process.stdout.write(
-    JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: fallbackEvent,
-        additionalContext: ''
-      },
-      suppressOutput: true
-    })
-  )
+  // fallback agent도 마지막 args에서 추출(있으면) — agy 응답 schema mismatch 방지.
+  let fallbackAgent = 'claude'
+  try {
+    const parsed = parseArgs(process.argv.slice(2))
+    if (parsed.agent === 'claude' || parsed.agent === 'codex' || parsed.agent === 'agy') {
+      fallbackAgent = parsed.agent
+    }
+  } catch {
+    /* noop */
+  }
+  process.stdout.write(JSON.stringify(buildHookOutput(fallbackAgent, fallbackEvent, '')))
   process.exit(0)
 }

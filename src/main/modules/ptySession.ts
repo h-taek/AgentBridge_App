@@ -218,14 +218,26 @@ export function killPtyAsync(sessionId: string, timeoutMs = 3000): Promise<void>
   const s = sessions.get(sessionId)
   if (!s) return Promise.resolve()
   return new Promise<void>((resolve) => {
-    const t = setTimeout(() => {
-      log.warn(`killPtyAsync timeout — exit 미도착, 계속 진행: ${sessionId}`)
-      resolve()
-    }, timeoutMs)
-    s.pty.onExit(() => {
+    // onExit는 IDisposable을 반환. timeout이 먼저 발화하면 리스너가 dispose되지 않은 채 남는다.
+    // PTY 객체가 곧 GC되긴 하나, 양쪽 분기에서 명시 dispose해 timeline 명확화.
+    const disposable = s.pty.onExit(() => {
+      try {
+        disposable.dispose()
+      } catch {
+        /* noop */
+      }
       clearTimeout(t)
       resolve()
     })
+    const t = setTimeout(() => {
+      log.warn(`killPtyAsync timeout — exit 미도착, 계속 진행: ${sessionId}`)
+      try {
+        disposable.dispose()
+      } catch {
+        /* noop */
+      }
+      resolve()
+    }, timeoutMs)
     killPty(sessionId)
   })
 }

@@ -39,13 +39,26 @@ export type TurnRecord = {
 
 // cap 정책 (architecture §15.3):
 //   - user cap 8K
-//   - assistantBody cap 500 chars (긴 응답은 첫 400 + 마지막 100)
+//   - assistantBody cap: 사용자 설정(TurnsAssistantDetail)에 따라 단계별 다름. 기본 'compact'=500.
 //   - toolCalls.arg cap 500 chars
 export const TURN_CAP = {
   userBytes: 8 * 1024,
   assistantBodyChars: 500,
   toolCallArgChars: 500
 } as const
+
+// 사용자 설정의 turnsAssistantDetail 단계별 assistantBody char cap.
+//   - full:    raw에 가깝게 보존. 시스템 안정성 위해 50KB hard cap만 적용.
+//   - compact: 기본값. 약 500자(앞 400 + 뒤 100) 요약 — IR refine에 균형 잡힌 양.
+//   - minimal: 약 200자 — 디스크 가벼움. 디테일 손실.
+export const TURNS_ASSISTANT_DETAIL_CAP: Record<
+  'full' | 'compact' | 'minimal',
+  { chars: number; headChars: number; tailChars: number }
+> = {
+  full: { chars: 50_000, headChars: 49_000, tailChars: 1_000 },
+  compact: { chars: 500, headChars: 400, tailChars: 100 },
+  minimal: { chars: 200, headChars: 150, tailChars: 50 }
+}
 
 // Compaction trigger (architecture §15.4 + 2026-05-11 실사용 튜닝):
 //   uncompacted count >= 6  OR  sum(userBytes + assistantBodyBytes) >= 12K

@@ -1,14 +1,14 @@
 import type { CliKind } from '@shared/ipc'
 import { claudeAdapter } from './claudeAdapter'
 import { codexAdapter } from './codexAdapter'
-import { geminiAdapter } from './geminiAdapter'
+import { agyAdapter } from './agyAdapter'
 import type { CLIAdapter } from './types'
 
-// 모델별 어댑터 라우팅 — M2 E 청크에서 gemini 추가로 세 모델 모두 등록 완료.
+// 모델별 어댑터 라우팅 — 2026 agy(Antigravity) 리브랜드로 gemini → agy 어댑터 교체.
 const adapters: Partial<Record<CliKind, CLIAdapter>> = {
   claude: claudeAdapter,
   codex: codexAdapter,
-  gemini: geminiAdapter
+  agy: agyAdapter
 }
 
 export function getAdapter(kind: CliKind): CLIAdapter {

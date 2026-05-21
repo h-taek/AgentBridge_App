@@ -1,7 +1,7 @@
 import type { WebContents } from 'electron'
 import type { CliKind, CliSpawnInteractiveResult } from '@shared/ipc'
 
-// CLIAdapter 추상 — Claude/Codex/Gemini 세 어댑터가 동일 인터페이스를 노출한다.
+// CLIAdapter 추상 — Claude/Codex/Agy(Antigravity) 세 어댑터가 동일 인터페이스를 노출한다.
 // 메인 채팅은 spawnInteractive(PTY) 단일 모드이고, IR refine spawn(헤드리스 stream-json)은 M2에서 추가.
 //
 // 설계 원칙:
@@ -56,6 +56,9 @@ export type SpawnRefineRequest = {
   abortSignal?: AbortSignal
   // optional 정밀 비용 추적용 — 미설정 시 60s.
   timeoutMs?: number
+  // 모델 지정. agy는 CLI flag로 지정 불가 — 무시. codex는 `-c model=`, claude는 `--model`로 전달.
+  // null/undefined면 각 CLI의 default 모델 사용.
+  modelHint?: string | null
 }
 
 export type RefineUsage = {
@@ -84,8 +87,8 @@ export type CLIAdapter = {
   // 모델별 TUI 입력 박스의 submit 인식이 다르다:
   //   - claude: text + '\r' 한 번 (Ink/React 기반)
   //   - codex: bracketed paste(\x1b[200~text\x1b[201~) + '\r' 한 번 (Rust TUI는 paste 종료 후 \r을 submit으로 처리)
-  //   - gemini: text → 80ms 지연 → '\r' 두 번 분리 (readline fast-paste detection이 연속 byte를
-  //     모두 paste로 묶기 때문에 시간 차로 \r을 단일 키 이벤트로 분리)
+  //   - agy: text → 80ms 지연 → '\r' 두 번 분리 (구 gemini readline fast-paste detection 동일 — 인터페이스
+  //     리브랜드 이후에도 readline 패턴이 동일하다고 가정. 라이브 검증 시 동작 변경 가능성 있음.)
   // xterm.js 직접 입력은 별도 경로(pty:write)이므로 영향 없음.
   formatChatSubmit(text: string): ChatSubmitStep[]
   spawnInteractive(
@@ -105,7 +108,7 @@ export type CLIAdapter = {
   //   - claude: ~/.claude/projects/<cwd-encoded>/<modelSessionId>.jsonl 존재 확인
   //   - codex:  modelSessionId === null이면 native session 미생성 (codex thread_id 캡처는
   //             첫 사용자 메시지가 도착해야 발생)
-  //   - gemini: ~/.gemini/tmp/<projectHash>/chats/session-*-<modelSessionId-prefix>.jsonl 확인
+  //   - agy:    ~/.gemini/antigravity-cli/conversations/<UUID>.pb 존재 확인
   hasNativeSession(modelSessionId: string | null, cwd?: string): Promise<boolean>
   // CLI native 세션 파일을 디스크에서 hard delete. AgentBridge에서 세션을 삭제했는데 외부
   // CLI(예: `claude --resume`, `codex resume`, `gemini --resume`)에서 그 세션이 보이면

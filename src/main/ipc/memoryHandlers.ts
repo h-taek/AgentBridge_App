@@ -1,4 +1,4 @@
-import { promises as fs } from 'node:fs'
+import { promises as fs, type Stats } from 'node:fs'
 import * as path from 'node:path'
 import { ipcMain } from 'electron'
 import log from 'electron-log/main'
@@ -100,34 +100,44 @@ async function handleArchiveList(_e: unknown, req: ArchiveListRequest): Promise<
   return { snapshots }
 }
 
-async function handleArchiveLoad(_e: unknown, req: ArchiveLoadRequest): Promise<ArchiveLoadResult> {
-  // 경로 안전 가드 — workspaceId의 archive 디렉토리 외 read 차단.
-  //   1) basename 패턴 — `compressed_*.jsonl`만 허용 (그 외 파일명 거부).
-  //   2) lstat — symlink면 즉시 거부 (archiveDir 안 symlink가 외부 파일 가리키는 우회 차단).
-  //   3) realpath 비교 — symlink가 아니더라도 realpath 후 archiveDir prefix 비교로 traversal 차단.
-  const { archiveDir } = getWorkspacePaths(req.workspaceId)
-  const resolved = path.resolve(req.archivePath)
+// archive 파일 경로 안전 검증 — 3중 가드를 헬퍼로 추출 (load/delete 양쪽 공유).
+//   1) basename 패턴 — `compressed_*.jsonl`만 허용
+//   2) lstat — symlink면 즉시 거부 (archiveDir 안 symlink가 외부 파일 가리키는 우회 차단)
+//   3) realpath 비교 — symlink 아니어도 realpath 후 archiveDir prefix 비교로 traversal 차단
+// 반환값: 검증 통과한 realpath (호출자가 read/unlink 대상으로 그대로 사용).
+async function resolveArchivePathSafe(
+  archiveDir: string,
+  inputPath: string,
+  errPrefix: string
+): Promise<string> {
+  const resolved = path.resolve(inputPath)
   const basename = path.basename(resolved)
   if (!/^compressed_.+\.jsonl$/.test(basename)) {
-    throw new Error('archive:load 거부 — 파일명 패턴 불일치')
+    throw new Error(`${errPrefix} 거부 — 파일명 패턴 불일치`)
   }
-  let lstats
+  let lstats: Stats
   try {
     lstats = await fs.lstat(resolved)
   } catch {
-    throw new Error('archive:load 거부 — 파일 없음')
+    throw new Error(`${errPrefix} 거부 — 파일 없음`)
   }
   if (lstats.isSymbolicLink()) {
-    throw new Error('archive:load 거부 — symlink 비허용')
+    throw new Error(`${errPrefix} 거부 — symlink 비허용`)
   }
   if (!lstats.isFile()) {
-    throw new Error('archive:load 거부 — 일반 파일 아님')
+    throw new Error(`${errPrefix} 거부 — 일반 파일 아님`)
   }
   const realArchiveDir = await fs.realpath(archiveDir)
   const realTarget = await fs.realpath(resolved)
   if (!realTarget.startsWith(realArchiveDir + path.sep)) {
-    throw new Error('archive:load 거부 — 워크스페이스 archive 외부 경로')
+    throw new Error(`${errPrefix} 거부 — 워크스페이스 archive 외부 경로`)
   }
+  return realTarget
+}
+
+async function handleArchiveLoad(_e: unknown, req: ArchiveLoadRequest): Promise<ArchiveLoadResult> {
+  const { archiveDir } = getWorkspacePaths(req.workspaceId)
+  const realTarget = await resolveArchivePathSafe(archiveDir, req.archivePath, 'archive:load')
   const raw = await fs.readFile(realTarget, 'utf8')
   const firstLine = raw.split('\n', 1)[0]?.trim()
   if (!firstLine) throw new Error('archive 파일 비어있음')
@@ -147,28 +157,7 @@ async function handleArchiveDelete(
   log.info('archive:delete', { workspaceId: req.workspaceId, archivePath: req.archivePath })
   try {
     const { archiveDir } = getWorkspacePaths(req.workspaceId)
-    const resolved = path.resolve(req.archivePath)
-    const basename = path.basename(resolved)
-    if (!/^compressed_.+\.jsonl$/.test(basename)) {
-      throw new Error('archive:delete 거부 — 파일명 패턴 불일치')
-    }
-    let lstats
-    try {
-      lstats = await fs.lstat(resolved)
-    } catch {
-      throw new Error('archive:delete 거부 — 파일 없음')
-    }
-    if (lstats.isSymbolicLink()) {
-      throw new Error('archive:delete 거부 — symlink 비허용')
-    }
-    if (!lstats.isFile()) {
-      throw new Error('archive:delete 거부 — 일반 파일 아님')
-    }
-    const realArchiveDir = await fs.realpath(archiveDir)
-    const realTarget = await fs.realpath(resolved)
-    if (!realTarget.startsWith(realArchiveDir + path.sep)) {
-      throw new Error('archive:delete 거부 — 워크스페이스 archive 외부 경로')
-    }
+    const realTarget = await resolveArchivePathSafe(archiveDir, req.archivePath, 'archive:delete')
     await fs.unlink(realTarget)
     return { ok: true }
   } catch (err) {
@@ -249,11 +238,14 @@ async function handleInstructionsCreate(
   }
 }
 
-// memory:reset — 사용자가 명시적으로 IR(및 옵션으로 turns.jsonl)을 비울 때 호출.
+// memory:reset — 사용자가 명시적으로 IR/turns/archive를 비울 때 호출.
 //   - ir.json을 '{}'로 atomic write (loadWorkspaceIR이 빈 IR로 인식)
 //   - alsoTurns=true면 turns.jsonl도 빈 파일로 rewrite
-//   - archive 디렉토리는 보존 — "스냅샷 정리"는 별개 액션
+//   - archive 디렉토리 안 모든 스냅샷 파일 unlink (디렉토리 자체는 보존)
 //   - ir:updated broadcast(source='manual') + alsoTurns면 turns:updated broadcast → IrPanel 즉시 갱신
+//
+// 정책 변경 (2026-05-21): 이전엔 archive 보존이 기본이었으나, 사용자가 "메모리 초기화"를 누른 의도가
+// 보통 archive까지 포함한 *완전 초기화*임이 확인되어 archive도 함께 정리하도록 통합.
 async function handleMemoryReset(_e: unknown, req: MemoryResetRequest): Promise<MemoryResetResult> {
   log.info('memory:reset', { workspaceId: req.workspaceId, alsoTurns: !!req.alsoTurns })
   try {
@@ -270,6 +262,28 @@ async function handleMemoryReset(_e: unknown, req: MemoryResetRequest): Promise<
       const turnsTmp = `${paths.turnsJsonl}.${process.pid}.${Date.now()}.tmp`
       await fs.writeFile(turnsTmp, '', 'utf8')
       await fs.rename(turnsTmp, paths.turnsJsonl)
+    }
+
+    // archive 디렉토리 안 모든 파일 unlink — 디렉토리 자체는 유지(다음 compaction이 재생성).
+    try {
+      const entries = await fs.readdir(paths.archiveDir)
+      await Promise.all(
+        entries.map(async (name) => {
+          try {
+            await fs.unlink(path.join(paths.archiveDir, name))
+          } catch (err) {
+            const code = (err as NodeJS.ErrnoException).code
+            if (code !== 'ENOENT') {
+              log.warn('archive 항목 unlink 실패', { name, err: String(err) })
+            }
+          }
+        })
+      )
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code
+      if (code !== 'ENOENT') {
+        log.warn('archive 디렉토리 정리 실패', { err: String(err) })
+      }
     }
 
     broadcastIrUpdated({ workspaceId: req.workspaceId, source: 'manual' })

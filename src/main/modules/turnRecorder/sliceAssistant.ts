@@ -1,6 +1,6 @@
-import type { CliKind } from '@shared/ipc'
+import type { CliKind, TurnsAssistantDetail } from '@shared/ipc'
 import type { TurnToolCall } from '@shared/turns'
-import { TURN_CAP } from '@shared/turns'
+import { TURN_CAP, TURNS_ASSISTANT_DETAIL_CAP } from '@shared/turns'
 
 // sliceAssistant — M3 O 청크. architecture §15.3.
 //
@@ -58,9 +58,10 @@ function normalizeTerminal(raw: string): string {
 const CLAUDE_TOOL_RE = /^[\s│]*⏺\s+([A-Z][A-Za-z0-9]*)\(([^)\n]*)\)\s*$/
 const CLAUDE_RESULT_RE = /^\s*[⎿└]\s+(.*)$/
 
-// gemini tool 호출: `⊶  ReadFile  src/path.ts` (pending) / `✓  ReadFile  src/path.ts` (completed).
-// 2 공백 + Cap-word + 2 공백 + arg 패턴. 매우 깔끔해 false positive 위험 낮음.
-const GEMINI_TOOL_RE = /^\s*[⊶✓]\s+([A-Z][A-Za-z]+)\s+(.+?)\s*$/
+// agy(Antigravity, 구 Gemini CLI) tool 호출: `⊶  ReadFile  src/path.ts` (pending) /
+// `✓  ReadFile  src/path.ts` (completed). 2 공백 + Cap-word + 2 공백 + arg 패턴.
+// agy 1.0.0에서도 동일 형식 가정 — 변경 시 라이브 테스트 후 정규식 보완.
+const AGY_TOOL_RE = /^\s*[⊶✓]\s+([A-Z][A-Za-z]+)\s+(.+?)\s*$/
 
 function extractToolCalls(
   lines: string[],
@@ -93,12 +94,12 @@ function extractToolCalls(
     return { toolCalls, usedLineIdx }
   }
 
-  if (model === 'gemini') {
+  if (model === 'agy') {
     // gemini는 streaming 중 같은 호출이 `⊶` → `✓` 두 단계로 나옴 — 같은 (tool, arg) 쌍이 다수 출현.
     // 중복 제거를 위해 set 사용.
     const seen = new Set<string>()
     for (let i = 0; i < lines.length; i++) {
-      const m = lines[i].match(GEMINI_TOOL_RE)
+      const m = lines[i].match(AGY_TOOL_RE)
       if (!m) continue
       const tool = m[1]
       let arg = m[2].trim()
@@ -254,7 +255,7 @@ function isChromeForModel(raw: string, model: CliKind): boolean {
     if (/^(model:|directory:)\s/.test(t)) return true
   }
 
-  if (model === 'gemini') {
+  if (model === 'agy') {
     // gemini specific UI strings
     if (
       /^(Shift\+Tab to accept edits|Type your message|workspace \(\/directory\)|\d+ GEMINI\.md file|Executing Hook:|using GEMINI\.md)/.test(
@@ -281,10 +282,7 @@ function isChromeForModel(raw: string, model: CliKind): boolean {
 function streamingPrefixDedup(text: string): string {
   const blocks = text.split(/\n\n+/)
   const out: string[] = []
-  const norm = (s: string): string =>
-    s
-      .replace(/[`*~_]/g, '')
-      .trim()
+  const norm = (s: string): string => s.replace(/[`*~_]/g, '').trim()
   for (const block of blocks) {
     if (out.length === 0) {
       out.push(block)
@@ -316,30 +314,35 @@ function compactBody(lines: string[], model: CliKind): string {
     deduped.push(norm)
     prev = norm
   }
-  let text = deduped
-    .join('\n')
-    .replace(/\n{4,}/g, '\n\n\n')
+  let text = deduped.join('\n').replace(/\n{4,}/g, '\n\n\n')
   text = streamingPrefixDedup(text)
   return text
 }
 
-// ─── 5단계: body cap (앞 400 + 뒤 100) ─────────────────────────────────
+// ─── 5단계: body cap — detail level별 길이 ─────────────────────────────
+// 사용자 설정 turnsAssistantDetail에 따라 cap 크기 분기. TURNS_ASSISTANT_DETAIL_CAP은
+// shared/turns.ts에 정의 (full=50KB, compact=500, minimal=200).
 
-function applyBodyCap(body: string): string {
-  const cap = TURN_CAP.assistantBodyChars
-  if (body.length <= cap) return body
-  return body.slice(0, 400) + '\n…[truncated]…\n' + body.slice(body.length - 100)
+function applyBodyCap(body: string, detail: TurnsAssistantDetail): string {
+  const { chars, headChars, tailChars } = TURNS_ASSISTANT_DETAIL_CAP[detail]
+  if (body.length <= chars) return body
+  return body.slice(0, headChars) + '\n…[truncated]…\n' + body.slice(body.length - tailChars)
 }
 
 // ─── 최종 ─────────────────────────────────────────────────────────────
 
-export function sliceAssistant(args: { raw: string; model: CliKind }): SliceResult {
+export function sliceAssistant(args: {
+  raw: string
+  model: CliKind
+  detail?: TurnsAssistantDetail
+}): SliceResult {
+  const detail = args.detail ?? 'compact'
   const normalized = normalizeTerminal(args.raw)
   const lines = normalized.split('\n')
   const { toolCalls, usedLineIdx } = extractToolCalls(lines, args.model)
   const bodyLines = removeToolBlocks(lines, usedLineIdx)
   const compacted = compactBody(bodyLines, args.model)
-  const capped = applyBodyCap(compacted)
+  const capped = applyBodyCap(compacted, detail)
   return {
     assistantBody: capped,
     assistantBodyBytes: Buffer.byteLength(capped, 'utf8'),
