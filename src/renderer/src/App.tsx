@@ -105,12 +105,25 @@ function App(): React.JSX.Element {
 
   // 채팅(turn 완료) 시점에 현재 열린 워크스페이스의 sessions[lastChattedAt] 갱신 → 좌사이드바
   // 세션 정렬 + 탭 정렬 반영. (워크스페이스 자체 정렬은 갱신 안 함 — 사용자 요청)
+  // View Transitions API — sessions 재정렬을 startViewTransition으로 감싸면 사이드바/탭의
+  // 동일 viewTransitionName 항목이 자동으로 슬라이드 모션 (Chromium 111+, Electron 39 지원).
+  // 미지원 환경(타 브라우저 빌드 등)에선 fallback으로 즉시 setState.
   useEffect(() => {
     const off = window.agentbridge.memory.onTurnsUpdated((evt) => {
       if (evt.workspaceId === openWorkspaceId) {
         void window.agentbridge.workspaces
           .get(evt.workspaceId)
-          .then((ws) => setOpenWorkspace(ws))
+          .then((ws) => {
+            const apply = (): void => setOpenWorkspace(ws)
+            const doc = document as Document & {
+              startViewTransition?: (cb: () => void) => unknown
+            }
+            if (typeof doc.startViewTransition === 'function') {
+              doc.startViewTransition(apply)
+            } else {
+              apply()
+            }
+          })
           .catch(() => undefined)
       }
     })

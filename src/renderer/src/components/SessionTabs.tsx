@@ -166,6 +166,9 @@ export function SessionTabs({
         aria-selected={isActive}
         // hidden 탭 — 측정용으로만 DOM에 둠. 화면 밖(left: -99999px)으로 보내 visible 영역의 클릭/
         // hover 가로채기 차단. visibility:hidden + pointerEvents:none 중복 가드.
+        // 동시에 viewTransitionName 부여 — App.tsx가 setOpenWorkspace를 startViewTransition으로
+        // 감싸면 lastChattedAt 변경으로 인한 탭 재정렬이 자연스럽게 슬라이드. hidden 탭은
+        // 측정용이라 transition에서 제외.
         style={
           hidden
             ? {
@@ -175,7 +178,7 @@ export function SessionTabs({
                 top: 0,
                 pointerEvents: 'none'
               }
-            : undefined
+            : { viewTransitionName: `ses-tab-${s.sessionId}` }
         }
       >
         <button
@@ -234,8 +237,12 @@ export function SessionTabs({
             <button
               className="session-tab-overflow"
               onClick={(e) => {
+                // updater 함수는 비동기로 평가될 수 있어 그 시점엔 React가 e.currentTarget을
+                // null로 만들 수 있음 → 동기 capture 필수 (검은 화면 회귀 방지).
+                const target = e.currentTarget
+                const pos = computeMenuPos(target)
                 setAddMenuPos(null)
-                setOverflowMenuPos((cur) => (cur ? null : computeMenuPos(e.currentTarget)))
+                setOverflowMenuPos((cur) => (cur ? null : pos))
               }}
               disabled={busy}
               title={`${hiddenSessions.length}개 더 보기`}
@@ -250,8 +257,10 @@ export function SessionTabs({
           <button
             className="session-tab-add"
             onClick={(e) => {
+              const target = e.currentTarget
+              const pos = computeMenuPos(target)
               setOverflowMenuPos(null)
-              setAddMenuPos((cur) => (cur ? null : computeMenuPos(e.currentTarget)))
+              setAddMenuPos((cur) => (cur ? null : pos))
             }}
             disabled={busy}
             title="다른 모델 탭 추가"

@@ -3636,3 +3636,18 @@ code {
   color: var(--color-text-tertiary);
   margin-top: 2px;
 }
+
+/* ─── View Transitions — 세션 reorder 모션 ────────────────────────────
+   App.tsx의 onTurnsUpdated가 setOpenWorkspace를 startViewTransition으로 감싸면
+   사이드바(ses-sb-*) + 상단 탭(ses-tab-*)의 동일 viewTransitionName 항목이
+   이전/이후 위치를 자동 보간해 슬라이드. duration 짧게(220ms)로 부드럽되 답답하지 않게.
+   접근성: prefers-reduced-motion 사용자엔 transition 즉시. */
+::view-transition-group(*) {
+  animation-duration: 220ms;
+  animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*) {
+    animation-duration: 0.01ms;
+  }
+}
