@@ -25,10 +25,49 @@ export function normalizeWorkspacePath(input: string): string {
   return path.normalize(s)
 }
 
+// CLI 글로벌 설정 디렉토리 — 워크스페이스로 지정 시 hookInstaller가
+// `<cwd>/.codex/hooks.json`, `<cwd>/.agents/hooks.json` 등을 쓰면서 *글로벌 hook 파일*을
+// 덮어쓸 수 있어 차단한다. 홈 디렉토리 자체도 차단 — `~/.codex/hooks.json`이 이미 codex의
+// 글로벌 hook 경로이기 때문.
+//
+// 매칭 규칙: 해당 디렉토리 *자체* + 그 *하위 모든 경로*.
+const BLOCKED_GLOBAL_DIRS = [
+  '', // homedir 자체
+  '.codex',
+  '.agents',
+  '.gemini',
+  '.claude',
+  '.antigravity',
+  '.antigravity-ide',
+  '.antigravitycli'
+]
+
+function isInsideGlobalCliConfigDir(p: string): string | null {
+  const home = path.normalize(os.homedir())
+  const target = path.normalize(p)
+  if (target === home) return '홈 디렉토리'
+  const rel = path.relative(home, target)
+  // home 밖이면 차단 대상 아님
+  if (rel.startsWith('..') || path.isAbsolute(rel)) return null
+  const firstSegment = rel.split(path.sep)[0] ?? ''
+  for (const blocked of BLOCKED_GLOBAL_DIRS) {
+    if (blocked === '') continue
+    if (firstSegment === blocked) return `~/${blocked}`
+  }
+  return null
+}
+
 // workspace 경로가 디렉토리로 존재하는지 검증. 실패 시 친절한 에러 메시지.
 export function validateWorkspacePath(p: string): void {
   if (!p) {
     throw new Error('workspace 경로가 비어있습니다')
+  }
+  const blocked = isInsideGlobalCliConfigDir(p)
+  if (blocked) {
+    throw new Error(
+      `워크스페이스로 지정할 수 없는 경로입니다: ${p}\n` +
+        `(${blocked} 하위 — CLI 글로벌 설정 디렉토리를 덮어쓸 위험이 있어 차단)`
+    )
   }
   let stat
   try {
