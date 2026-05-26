@@ -2,6 +2,20 @@
 
 이 프로젝트는 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 1.1.0 형식을 따르며 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)을 사용합니다.
 
+## [0.0.5] — 2026-05-26
+
+PTY 출력 필터 강화. hook context 블록의 OPEN/CLOSE 태그 매칭이 codex TUI redraw로 인한 `\r`·ANSI escape·C0 제어문자 삽입에도 깨지지 않도록 알고리즘을 전면 재설계.
+
+### Changed
+
+- **`ptyDisplayFilter` 매칭 알고리즘 재설계** — 기존엔 raw input에 `indexOf`로 OPEN/CLOSE를 찾아 codex TUI가 태그 사이에 `\r`이나 ANSI escape를 끼워 넣으면 매칭이 깨졌습니다. 이제는 입력에서 ANSI/C0 제어문자를 걷어낸 plain projection을 만들고 그 위에서 매칭한 뒤 원본 인덱스를 역산해 emit/drop 경계를 결정합니다. 더러워진 태그 환경에서도 raw `<agentbridge-context>` 누수 없음.
+- **in-block watchdog 추가** — close 태그가 stream에서 영구 누락되는 catastrophic case 대비. 1초 timeout으로 force-unblock + 500ms 시점 stuck 경고 로깅.
+
+### Verification
+
+- 합성 worst-case 12종(`\r` 끼움, ANSI CSI 끼움, OSC escape 끼움, BS/`\t`/DEL 끼움, 청크 경계 분할 등) 통과
+- 실제 4개 세션 replay.log(총 8.6MB, OPEN 태그 32개)를 청크 크기 4096/1024/256/64/13/1 byte로 streaming — 모든 청크 크기에서 byte-identical 출력 확인
+
 ## [0.0.4] — 2026-05-22
 
 ad-hoc 서명 베타. Gemini → Antigravity 리브랜드 + 보안 강화 + 사용성 개선.
